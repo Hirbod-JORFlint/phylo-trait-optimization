@@ -1,0 +1,69 @@
+---
+title: "diagnostics_on_tree_reorder"
+author: "hirgh815"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Diagnostic study
+
+It is important to note that to run this series of experiments, one of the files '02_reorder'
+or 'RMaCzek_test.R' should be run completely. The simulated annealing code is looking for patterns in how trait changes distribute across tree tips. In evolutionary biology, this concept is called phylogenetic signal—the statistical tendency for related species to resemble one another more than they resemble species drawn at random from the tree.
+
+
+## phylogenetic signal
+
+On real biological datasets phylosignal can definitively prove whether the optimized layout highlights true evolutionary constraints or just arbitrary numeric sorting.
+whether closely related species tend to resemble each other in their trait values more than expected by chance. This output contains two indices:
+Blomberg's K: measures whether trait similarity follows the phylogenetic tree.
+Abouheif's Cmean: another measure of phylogenetic autocorrelation, sensitive to trait clustering among related taxa.
+
+```{r}
+# install.packages("phylosignal")
+library(phylosignal)
+library(phylobase)
+
+# Merge the tree and traits into a unified S4 object
+p4d <- phylo4d(optimized_tree, traits)
+
+# Calculate standard biological indices like Blomberg's K and Abouheif's Cmean
+signal_metrics <- phyloSignal(p4d, methods = c("K", "Cmean"))
+print(signal_metrics)
+
+# Check the biological signal for Trait 1
+signal <- phylosig(my_tree, traits[, "Trait3"], method = "lambda")
+print(signal)
+```
+
+## Tanglegrams
+
+If you want to evaluate how heavily your tree's fixed evolutionary branches are constraining your trait sorting, you can use a tanglegram (a visual tool that draws two trees facing each other with lines connecting matching tips)
+
+```{r}
+# install.packages("phylogram")
+library(dendextend)
+library(phylogram) # Provides direct phylo -> dendrogram conversion
+
+# Convert directly without using intermediate as.hclust steps
+dend_orig <- as.dendrogram(compute.brlen(my_tree))
+
+optimized_ultra <- force.ultrametric(optimized_tree, method = "nnls")
+dend_opt <- as.dendrogram(optimized_ultra)
+
+# Plot tanglegram
+tanglegram(dend_orig, dend_opt, main_left = "Original", main_right = "Optimized",
+           fast = TRUE, highlight_distinct_edges = FALSE)
+
+```
+
+## 
+
+```{r}
+
+# Reconstruct ancestral states for a trait across all internal nodes
+anc_states <- ace(traits[, "Trait3"], my_tree, type = "continuous", method = "ML")
+```
+

@@ -1,6 +1,8 @@
+# install.packages("R.utils")
 library(ape)
 library(phytools)
 library(RMaCzek)
+library(seriation)
 
 
 set.seed(42)
@@ -410,3 +412,93 @@ cost_Mine <- result$cost
 
 cat("RMaCzek seriation cost:", cost_auto, "\n")
 cat("My annealing cost:   ", cost_Mine, "\n")
+
+library(R.utils)
+
+# 1. Gather all distance-based seriation methods
+methods_to_test <- seriation::list_seriation_methods("dist")
+
+# Remove Enumerate (completely impractical for large datasets)
+methods_to_test <- setdiff(methods_to_test, "Enumerate")
+
+# Add RMaCzek's native genetic algorithm
+methods_to_test <- c(methods_to_test, "ga")
+
+# 2. Initialize results table
+benchmark_results <- data.frame(
+  Method = character(),
+  Cost = numeric(),
+  Status = character(),
+  stringsAsFactors = FALSE
+)
+
+# 3. Benchmark each method with a 30-second timeout
+for (m in methods_to_test) {
+  
+  message("Evaluating method: ", m, "...")
+  
+  res <- tryCatch({
+    
+    withTimeout({
+      
+      # Run seriation
+      cz_res <- czek_matrix(
+        traits,
+        order = m,
+        scale_data = FALSE
+      )
+      
+      # Extract ordering
+      ord_idx <- attr(cz_res, "order")
+      
+      # Compute cost
+      current_cost <- trait_cost_from_order(ord_idx, traits)
+      
+      data.frame(
+        Method = m,
+        Cost = current_cost,
+        Status = "Success",
+        stringsAsFactors = FALSE
+      )
+      
+    }, timeout = 30, onTimeout = "error")
+    
+  }, TimeoutException = function(e) {
+    
+    data.frame(
+      Method = m,
+      Cost = NA,
+      Status = "Timeout (>30s)",
+      stringsAsFactors = FALSE
+    )
+    
+  }, error = function(e) {
+    
+    data.frame(
+      Method = m,
+      Cost = NA,
+      Status = paste("Error:", conditionMessage(e)),
+      stringsAsFactors = FALSE
+    )
+    
+  })
+  
+  benchmark_results <- rbind(benchmark_results, res)
+}
+
+# 4. Append simulated annealing result
+annealing_res <- data.frame(
+  Method = "My_Simulated_Annealing",
+  Cost = result$cost,
+  Status = "Success",
+  stringsAsFactors = FALSE
+)
+
+benchmark_results <- rbind(benchmark_results, annealing_res)
+
+# 5. Sort leaderboard
+benchmark_results <- benchmark_results[
+  order(benchmark_results$Cost, na.last = TRUE),
+]
+
+print(benchmark_results, row.names = FALSE)

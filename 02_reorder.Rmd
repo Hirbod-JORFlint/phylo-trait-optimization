@@ -1048,3 +1048,30 @@ results <- data.frame(
 print(results)
 ```
 
+```{r}
+library(ape)
+library(cba)
+
+# 1. Generate exact dataset
+# set.seed(42)
+# my_tree <- rtree(100, tip.label = paste0("Tip", 1:100))
+# traits <- matrix(runif(100 * 6, 0, 5), nrow = 100, 
+#                  dimnames = list(my_tree$tip.label, paste0("Trait", 1:6)))
+
+# 2. Compute 6D continuous trait distances
+trait_dist <- dist(traits, method = "euclidean")
+
+# 3. Convert to hclust using an ultrametric transformation for topology scaling
+hc_tree <- as.hclust(chronos(my_tree))
+
+# 4. Global optimization via Dynamic Programming (OLO)
+olo_result <- order.optimal(dist = trait_dist, merge = hc_tree$merge)
+
+# 5. Extract the optimized tip order sequence directly from the hclust object
+optimized_labels <- hc_tree$labels[olo_result$order]
+
+# 6. Apply the optimal layout sequence back to the original tree natively
+optimized_tree <- rotateConstr(my_tree, optimized_labels)
+```
+
+
