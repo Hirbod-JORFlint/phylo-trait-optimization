@@ -261,29 +261,45 @@ traits <- matrix(
 #     )
 # }
 
-# get tree score through visual plotting
+# Fast tree tip order (no plotting)
+
 
 get_plot_order <- function(tree){
 
-    oldpar <- par(no.readonly = TRUE)
-
-    on.exit(par(oldpar))
-
-    plot(
-        tree,
-        plot=FALSE
-    )
-
-    pp <- get(
-        "last_plot.phylo",
-        envir=.PlotPhyloEnv
-    )
-
     n <- length(tree$tip.label)
 
-    tree$tip.label[
-        order(pp$yy[1:n])
-    ]
+    # children of each internal node
+    children <- split(
+        tree$edge[,2],
+        tree$edge[,1]
+    )
+
+    root <- setdiff(
+        tree$edge[,1],
+        tree$edge[,2]
+    )[1]
+
+
+    # recursive depth-first traversal
+    traverse <- function(node){
+
+        # tip
+        if(node <= n){
+            return(node)
+        }
+
+        unlist(
+            lapply(
+                children[[as.character(node)]],
+                traverse
+            )
+        )
+    }
+
+
+    idx <- traverse(root)
+
+    tree$tip.label[idx]
 }
 
 
@@ -300,6 +316,7 @@ trait_cost <- function(tree, traits){
             )
         )
     )
+
 }
 
 
@@ -586,29 +603,45 @@ traits <- matrix(
 # Objective function
 
 
-# get tree score through visual plotting
+# Fast tree tip order (no plotting)
+
 
 get_plot_order <- function(tree){
 
-    oldpar <- par(no.readonly = TRUE)
-
-    on.exit(par(oldpar))
-
-    plot(
-        tree,
-        plot=FALSE
-    )
-
-    pp <- get(
-        "last_plot.phylo",
-        envir=.PlotPhyloEnv
-    )
-
     n <- length(tree$tip.label)
 
-    tree$tip.label[
-        order(pp$yy[1:n])
-    ]
+    # children of each internal node
+    children <- split(
+        tree$edge[,2],
+        tree$edge[,1]
+    )
+
+    root <- setdiff(
+        tree$edge[,1],
+        tree$edge[,2]
+    )[1]
+
+
+    # recursive depth-first traversal
+    traverse <- function(node){
+
+        # tip
+        if(node <= n){
+            return(node)
+        }
+
+        unlist(
+            lapply(
+                children[[as.character(node)]],
+                traverse
+            )
+        )
+    }
+
+
+    idx <- traverse(root)
+
+    tree$tip.label[idx]
 }
 
 
@@ -625,6 +658,7 @@ trait_cost <- function(tree, traits){
             )
         )
     )
+
 }
 
 
