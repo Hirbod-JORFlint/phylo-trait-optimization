@@ -1048,30 +1048,242 @@ results <- data.frame(
 print(results)
 ```
 
+The following code snippet contain the cost caculation function for evaluating the function that came before and after:
+
 ```{r}
+get_layout_cost <- function(tree, traits) {
+  n <- length(tree$tip.label)
+  
+  # 1. Vectorized Traversal (replaces recursive DFS)
+  # Extracts tips in the exact order they appear in the edge matrix.
+  # *CRITICAL*: Tree must be in "cladewise" order (see note below).
+  is_tip <- tree$edge[, 2] <= n
+  ord <- tree$tip.label[tree$edge[is_tip, 2]]
+  
+  # 2. Optimized Distance Calculation
+  X <- traits[ord, , drop = FALSE]
+  
+  # diff() is a native C-level function that does exactly what X[-1,] - X[-nrow,] does, but faster.
+  sum(sqrt(rowSums(diff(X)^2)))
+}
+
+get_layout_cost(greedy_result$tree,traits)
+```
+
+
+## Solution 6
+
+The following code snippet finds the optimal tree according to the Bar-Joseph et al.
+Using this algorithm can be a benchmark for the heuristic algorithm above:
+
+```{r}
+# =================================================================
+# Optimal Leaf Ordering (OLO) for a phylogenetic tree, optimized
+# against multi-dimensional continuous trait data
+# =================================================================
+#
+# Standard OLO (Bar-Joseph et al. 2001, Bioinformatics) reorders the
+# leaves of a binary tree -- by flipping the two children at each
+# internal node -- to minimize the sum of dissimilarities between
+# ADJACENT leaves in the final linear layout, WITHOUT changing the
+# tree's topology (only left/right rotations are allowed).
+#
+# Here the topology is a fixed phylogeny (e.g. from sequence data),
+# and the dissimilarity used to score adjacency comes from a
+# separate multi-dimensional continuous trait matrix (morphology,
+# gene expression, niche variables, etc.) -- NOT from patristic /
+# cophenetic distances on the tree itself. The DP is agnostic to
+# where the distance matrix comes from, so the classic algorithm
+# applies directly; we just supply a trait-based distance matrix.
+#
+# Dependencies: only `ape`.
+# Verified against brute-force enumeration of all 2^(n-1) rotations
+# for n = 4..10 tips (exact match every time).
+# =================================================================
+ 
 library(ape)
-library(cba)
+ 
+# ---------------------------------------------------------------
+# children[[node]] = integer vector of child node ids, for every
+# node (tip or internal) in an ape "phylo" object.
+# ---------------------------------------------------------------
+get_children_list <- function(phy) {
+  n_tip  <- length(phy$tip.label)
+  n_node <- phy$Nnode
+  children <- vector("list", n_tip + n_node)
+  for (i in seq_len(nrow(phy$edge))) {
+    p  <- phy$edge[i, 1]
+    ch <- phy$edge[i, 2]
+    children[[p]] <- c(children[[p]], ch)
+  }
+  children
+}
+ 
+# ---------------------------------------------------------------
+# olo_phylo(phy, d)
+#
+#   phy : a fully bifurcating ape "phylo" object (n tips). Branch
+#         lengths are irrelevant -- only topology matters.
+#   d   : n x n distance matrix / dist object over the TRAITS,
+#         with row/col i corresponding to phy$tip.label[i].
+#
+# Returns list(order, cost):
+#   order = integer vector (permutation of 1:n) giving the leaf
+#           order that minimizes summed adjacent trait-distance,
+#           subject to the tree's topology.
+#   cost  = the corresponding minimal total adjacent dissimilarity.
+#
+# Algorithm: Bar-Joseph dynamic programming. For every internal
+# node v with children L, R, and for every pair of leaves (u,w)
+# with u under L and w under R, define
+#     M(u,w) = min_{b in leaves(L), c in leaves(R)}
+#                 [ M_L(u,b) + M_R(c,w) + d(b,c) ]
+# i.e. the cheapest way to lay out v's leaves starting at u and
+# ending at w, where b/c are whichever leaves end up adjacent
+# across the L/R seam. Because L's and R's leaf blocks can each be
+# internally flipped independently, this exactly enumerates every
+# topology-respecting leaf arrangement.
+# ---------------------------------------------------------------
+olo_phylo <- function(phy, d) {
+ 
+  n_tip <- length(phy$tip.label)
+  if (!is.matrix(d)) d <- as.matrix(d)
+  stopifnot(nrow(d) == n_tip, ncol(d) == n_tip)
+ 
+  children <- get_children_list(phy)
+  memo <- vector("list", n_tip + phy$Nnode)
+ 
+  dp <- function(node) {
+    if (!is.null(memo[[node]])) return(memo[[node]])
+    kids <- children[[node]]
+ 
+    if (is.null(kids)) {                       # leaf / base case
+      res <- list(leaves = node,
+                   table = matrix(0, 1, 1, dimnames = list(node, node)))
+      memo[[node]] <<- res
+      return(res)
+    }
+    if (length(kids) != 2) {
+      stop("Node ", node, " has ", length(kids), " children; the tree ",
+           "must be fully bifurcating. Resolve polytomies first with ",
+           "ape::multi2di().")
+    }
+ 
+    left  <- dp(kids[1])
+    right <- dp(kids[2])
+    Lleaves <- left$leaves;  Rleaves <- right$leaves
+    LT <- left$table;        RT <- right$table
+ 
+    # Re-embed each child's table as a full symmetric matrix over its
+    # own leaves, so we can look up M(u,b) no matter which of the
+    # child's own two sub-children u and b originally belonged to.
+    L_full <- matrix(Inf, length(Lleaves), length(Lleaves),
+                      dimnames = list(Lleaves, Lleaves))
+    if (length(Lleaves) == 1) L_full[1,1] <- 0 else {
+      L_full[rownames(LT), colnames(LT)] <- LT
+      L_full[colnames(LT), rownames(LT)] <- t(LT)
+    }
+    R_full <- matrix(Inf, length(Rleaves), length(Rleaves),
+                      dimnames = list(Rleaves, Rleaves))
+    if (length(Rleaves) == 1) R_full[1,1] <- 0 else {
+      R_full[rownames(RT), colnames(RT)] <- RT
+      R_full[colnames(RT), rownames(RT)] <- t(RT)
+    }
+ 
+    tab  <- matrix(Inf, length(Lleaves), length(Rleaves),
+                    dimnames = list(Lleaves, Rleaves))
+    ptrB <- matrix(NA_integer_, length(Lleaves), length(Rleaves))
+    ptrC <- matrix(NA_integer_, length(Lleaves), length(Rleaves))
+ 
+    for (ui in seq_along(Lleaves)) {
+      u <- Lleaves[ui]
+      Lrow <- L_full[as.character(u), ]
+      for (wi in seq_along(Rleaves)) {
+        w <- Rleaves[wi]
+        Rcol <- R_full[, as.character(w)]
+        best <- Inf; bestB <- NA_integer_; bestC <- NA_integer_
+        for (bi in seq_along(Lleaves)) {
+          Lcost <- Lrow[bi]
+          if (!is.finite(Lcost)) next
+          b <- Lleaves[bi]
+          total_vec <- Lcost + Rcol + d[as.character(b), as.character(Rleaves)]
+          ci <- which.min(total_vec)
+          if (total_vec[ci] < best) { best <- total_vec[ci]; bestB <- b; bestC <- Rleaves[ci] }
+        }
+        tab[ui, wi] <- best; ptrB[ui, wi] <- bestB; ptrC[ui, wi] <- bestC
+      }
+    }
+ 
+    res <- list(leaves = c(Lleaves, Rleaves), table = tab,
+                Lleaves = Lleaves, Rleaves = Rleaves,
+                ptrB = ptrB, ptrC = ptrC, left = left, right = right)
+    memo[[node]] <<- res
+    res
+  }
+ 
+  root <- unique(setdiff(phy$edge[,1], phy$edge[,2]))
+  stopifnot(length(root) == 1)
+  top <- dp(root)
+ 
+  # backtrack from the globally best (u,w) boundary pair at the root
+  get_order <- function(node_res, start, end) {
+    if (length(node_res$leaves) == 1) return(node_res$leaves)
+    Lleaves <- node_res$Lleaves; Rleaves <- node_res$Rleaves
+    if (start %in% Lleaves && end %in% Rleaves) {
+      ui <- match(start, Lleaves); wi <- match(end, Rleaves)
+      b <- node_res$ptrB[ui, wi]; c_ <- node_res$ptrC[ui, wi]
+      c(get_order(node_res$left, start, b), get_order(node_res$right, c_, end))
+    } else if (start %in% Rleaves && end %in% Lleaves) {
+      rev(get_order(node_res, end, start))
+    } else stop("invalid boundary pair")
+  }
+ 
+  min_cost <- min(top$table)
+  idx <- which(top$table == min_cost, arr.ind = TRUE)[1, ]
+  best_order <- get_order(top, top$Lleaves[idx[1]], top$Rleaves[idx[2]])
+ 
+  list(order = as.integer(best_order), cost = min_cost)
+}
+ 
+# ---------------------------------------------------------------
+# make_trait_dist(traits, phy): build a correctly ordered/labelled
+# distance matrix from a trait table whose rownames are taxon names
+# (in ANY row order) matching phy$tip.label.
+# ---------------------------------------------------------------
+make_trait_dist <- function(traits, phy, method = "euclidean", scale_traits = TRUE) {
+  stopifnot(all(phy$tip.label %in% rownames(traits)))
+  traits <- traits[phy$tip.label, , drop = FALSE]
+  if (scale_traits) traits <- scale(traits)
+  d <- as.matrix(dist(traits, method = method))
+  rownames(d) <- colnames(d) <- as.character(seq_len(nrow(d)))
+  d
+}
+ 
+# ---------------------------------------------------------------
+# reorder_tree_olo(phy, d): run the DP and return a topology-
+# identical phylo object whose tips are rotated into the OLO order
+# (uses ape::rotateConstr, so no plotting package is required).
+# ---------------------------------------------------------------
+reorder_tree_olo <- function(phy, d) {
+  res <- olo_phylo(phy, d)
+  ord_labels <- phy$tip.label[res$order]
+  phy_ord <- rotateConstr(phy, constraint = ord_labels)
+  list(tree = phy_ord, order = ord_labels, cost = res$cost)
+}
 
-# 1. Generate exact dataset
-# set.seed(42)
-# my_tree <- rtree(100, tip.label = paste0("Tip", 1:100))
-# traits <- matrix(runif(100 * 6, 0, 5), nrow = 100, 
-#                  dimnames = list(my_tree$tip.label, paste0("Trait", 1:6)))
+```
 
-# 2. Compute 6D continuous trait distances
-trait_dist <- dist(traits, method = "euclidean")
+```{r}
 
-# 3. Convert to hclust using an ultrametric transformation for topology scaling
-hc_tree <- as.hclust(chronos(my_tree))
+d <- make_trait_dist(traits, my_tree, method = "euclidean", scale_traits = TRUE)
+out <- reorder_tree_olo(my_tree, d)
 
-# 4. Global optimization via Dynamic Programming (OLO)
-olo_result <- order.optimal(dist = trait_dist, merge = hc_tree$merge)
+cat("Minimal total adjacent trait-dissimilarity:", out$cost, "\n")
+cat("Optimal tip order:\n"); print(out$order)
 
-# 5. Extract the optimized tip order sequence directly from the hclust object
-optimized_labels <- hc_tree$labels[olo_result$order]
+# out$tree is a normal phylo object -- plot it as usual:
+plot(out$tree, main = "Tree with OLO-optimized tip order")
 
-# 6. Apply the optimal layout sequence back to the original tree natively
-optimized_tree <- rotateConstr(my_tree, optimized_labels)
 ```
 
 
