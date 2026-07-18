@@ -246,11 +246,34 @@ traits <- matrix(
 # Cost function
 
 
+# get_plot_order <- function(tree){
+# 
+#     oldpar <- par(no.readonly = TRUE)
+# 
+#     on.exit(par(oldpar))
+# 
+#     plot(
+#         tree,
+#         plot=FALSE
+#     )
+# 
+#     pp <- get(
+#         "last_plot.phylo",
+#         envir=.PlotPhyloEnv
+#     )
+# 
+#     n <- length(tree$tip.label)
+# 
+#     tree$tip.label[
+#         order(pp$yy[1:n])
+#     ]
+# }
+# 
 # trait_cost <- function(tree, traits){
 # 
-#     order <- tree$tip.label
+#     ord <- get_plot_order(tree)
 # 
-#     X <- traits[order,,drop=FALSE]
+#     X <- traits[ord,,drop=FALSE]
 # 
 #     sum(
 #         sqrt(
@@ -603,7 +626,7 @@ traits <- matrix(
 # Objective function
 
 
-# Fast tree tip order (no plotting)
+# Fast tree tip order (no plotting, I tried plotting it took decades)
 
 
 get_plot_order <- function(tree){
@@ -888,6 +911,101 @@ pca_result <- anneal_tree(
 time2 <- Sys.time()-start2
 
 
+############################################################
+# METHOD 3:
+# PCA + Greedy + Annealing
+############################################################
+
+cat("\nGreedy initialization\n")
+
+# Greedy local optimization
+
+greedy_optimize <- function(tree, traits, max_passes = 100){
+
+    current <- tree
+    current_cost <- trait_cost(current, traits)
+
+    Ntip <- length(tree$tip.label)
+
+    internal_nodes <- (Ntip + 1):(Ntip + tree$Nnode)
+
+    pass <- 1
+
+    repeat{
+
+        improved <- FALSE
+
+        for(node in internal_nodes){
+
+            rows <- which(current$edge[,1] == node)
+
+            if(length(rows) != 2)
+                next
+
+            candidate <- current
+
+            candidate$edge[rows,2] <-
+                rev(candidate$edge[rows,2])
+
+            candidate_cost <- trait_cost(
+                candidate,
+                traits
+            )
+
+            if(candidate_cost < current_cost){
+
+                current <- candidate
+                current_cost <- candidate_cost
+                improved <- TRUE
+
+            }
+
+        }
+
+        cat(
+            "Greedy pass",
+            pass,
+            "cost:",
+            current_cost,
+            "\n"
+        )
+
+        pass <- pass + 1
+
+        if(!improved || pass > max_passes)
+            break
+
+    }
+
+    list(
+        tree = current,
+        cost = current_cost,
+        passes = pass - 1
+    )
+
+}
+
+greedy_start <- greedy_optimize(
+    my_tree,
+    traits
+)
+
+greedy_tree <- greedy_start$tree
+
+cat(
+    "Initial greedy cost:",
+    greedy_start$cost,
+    "\n"
+)
+
+start3 <- Sys.time()
+
+greedy_result <- anneal_tree(
+    greedy_tree,
+    traits
+)
+
+time3 <- Sys.time()-start3
 
 ############################################################
 # Compare
@@ -897,27 +1015,32 @@ results <- data.frame(
 
     Method=c(
         "Random start",
-        "PCA + rotateConstr"
-        ),
+        "PCA + rotateConstr",
+        "Greedy + Annealing"
+    ),
 
     Initial_cost=c(
         trait_cost(random_tree, traits),
-        trait_cost(pca_tree, traits)
-        ),
+        trait_cost(pca_tree, traits),
+        greedy_start$cost
+    ),
 
     Final_cost=c(
         random_result$cost,
-        pca_result$cost
+        pca_result$cost,
+        greedy_result$cost
     ),
 
     Iterations=c(
         random_result$iterations,
-        pca_result$iterations
+        pca_result$iterations,
+        greedy_result$iterations
     ),
 
     Time_seconds=c(
         as.numeric(time1),
-        as.numeric(time2)
+        as.numeric(time2),
+        as.numeric(time3)
     )
 
 )
