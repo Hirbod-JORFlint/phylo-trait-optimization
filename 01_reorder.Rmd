@@ -1,0 +1,618 @@
+---
+title: "tree_orderer"
+author: "hirgh815"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## ape rotateConstr()
+
+The rotateConstr() function rotates internal nodes to find the closest possible match to the desired_order vector without altering the underlying tree topology (i.e., it doesn't change who is related to whom, just how it's visualized).
+
+```{r}
+#install.packages("ape")
+library(ape)
+
+# Create a random tree with 5 tips
+set.seed(42)
+my_tree <- rtree(5, tip.label = c("A", "B", "C", "D", "E"))
+
+# Let's see the current tip order
+my_tree$tip.label 
+# Output is: "A" "B" "C" "D" "E" (but visual order depends on topology)
+
+# Define your desired target order
+desired_order <- c("E", "C", "A", "D", "B")
+
+# Reorder the tree topology to match the constraint
+reordered_tree <- rotateConstr(my_tree, desired_order)
+
+# Check the new visual tip order
+reordered_tree$tip.label
+
+par(mfrow = c(1, 2)) # Side-by-side plotting
+
+# Original Tree
+plot(my_tree, main = "Original Tree")
+
+# Reordered Tree
+plot(reordered_tree, main = "Best Match to Desired Order")
+```
+
+## dendextend rotate()
+
+At every internal node, you look at its two children. You check both orientations (Left-Right vs. Right-Left) and calculate which orientation minimizes the distance to your target list. You save the best choice and move up to the parent node.
+Using dendextend actually solves the optimal leaf ordering problem for hierarchical clustering rather than general phylogenetic trees.
+
+```{r}
+#install.packages("dendextend")
+library(dendextend)
+#library(ape)
+
+is.ultrametric(my_tree)
+# FALSE
+
+# Force ultrametricity
+ultra_tree <- chronos(my_tree)
+
+is.ultrametric(ultra_tree)
+# TRUE
+
+# 1. Convert your phylo tree to a dendrogram
+dend <- as.dendrogram(as.hclust(ultra_tree))
+
+# 2. Reorder based on your target vector
+# (dendextend automatically uses optimal leaf ordering)
+target_order <- c("E","C","A","D","B")
+
+optimized_dend <- dendextend::rotate(dend, target_order)
+
+# 3. Convert back to phylo if needed
+optimized_tree <- as.phylo(as.hclust(optimized_dend))
+
+par(mfrow = c(1,2))
+
+plot(my_tree, main = "Original Tree")
+plot(optimized_tree, main = "Optimized Tree")
+
+```
+
+## bnpsd tree_reorder()
+
+tree_reorder() from the bnpsd package is a different type of tree reordering from dendextend::rotate(). It is designed specifically for phylogenetic trees (phylo objects) and attempts to reorder the tips to match a desired ordering without changing the tree topology.
+
+```{r}
+#install.packages("bnpsd")
+library("bnpsd")
+
+new_tree <- tree_reorder(
+    tree = my_tree,
+    labels = target_order
+)
+
+par(mfrow = c(1,2))
+
+plot(my_tree)
+title("Original")
+
+plot(new_tree)
+title("Reordered")
+```
+
+## Genetic optimization
+For the genetic algorithm, instead of treating the final tip order as the chromosome (which could easily produce invalid tree structures), the key idea is to encode only the rotations of the internal nodes. In a rooted binary tree with N tips, there are exactly N−1 internal nodes, and each internal node has only two possible orientations: it can either remain in its current orientation or have its left and right child subtrees swapped. Importantly, swapping these subtrees changes only the visual arrangement of the tips—it does not change the tree topology, branch lengths, or evolutionary relationships.
+
+Therefore, the chromosome is represented as a binary vector of length N−1, where each gene corresponds to one internal node:
+
+0 = leave the node unchanged.
+1 = rotate (flip) the node.
+
+This encoding guarantees that every chromosome always represents a valid version of the original tree, eliminating the possibility of generating biologically invalid trees during the evolutionary search.
+
+The fitness function then performs three main steps:
+
+Takes a binary chromosome as input.
+Applies the specified rotations to the original tree.
+Computes the resulting tip order and compares it with the desired target order.
+
+The quality of a solution is determined by how closely the resulting tip order matches the target ordering. Several measures could be used for this comparison, such as Kendall's Tau, Spearman's rank correlation, or edit-distance-based metrics. In this implementation, the fitness function evaluates the agreement between the two orderings by counting how many pairs of taxa preserve the same relative ordering as in the target sequence. The higher the agreement, the better the fitness score.
+```{r}
+###############################################################
+# Genetic Algorithm to Optimize Phylogenetic Tree Tip Ordering
+#
+# Goal:
+#   Find the combination of internal-node rotations that makes
+#   the displayed tip order as close as possible to a user-
+#   specified target ordering.
+#
+# Representation:
+#   Each chromosome is a binary vector.
+#
+#       0 = Do NOT rotate the corresponding internal node
+#       1 = Rotate the corresponding internal node
+#
+# A tree with N internal nodes therefore has N binary genes.
+###############################################################
+# install.packages("GA")
+
+library(ape)
+library(GA)
+
+###############################################################
+# Example tree
+###############################################################
+
+set.seed(42)
+
+# Generate a random rooted phylogenetic tree with 10 taxa
+my_tree <- rtree(10)
+
+# Desired tip order
+target_order <- c(
+  "t10","t9","t8","t7","t6",
+  "t5","t4","t3","t2","t1"
+)
+
+###############################################################
+# Function: Extract the CURRENT displayed tip order
+#
+# ape does NOT provide a function that directly returns the
+# plotting order after arbitrary rotations.
+#
+# Therefore we recursively traverse the tree from the root,
+# always visiting the left child before the right child.
+#
+# This produces the same ordering used when plotting a standard
+# rectangular phylogram.
+###############################################################
+
+get_tip_order <- function(tree){
+
+  edge <- tree$edge
+
+  nTip <- length(tree$tip.label)
+
+  root <- nTip + 1
+
+  visit <- function(node){
+
+    children <- edge[edge[,1] == node, 2]
+
+    labels <- character(0)
+
+    for(child in children){
+
+      if(child <= nTip){
+
+        labels <- c(labels, tree$tip.label[child])
+
+      }else{
+
+        labels <- c(labels, visit(child))
+
+      }
+
+    }
+
+    labels
+
+  }
+
+  visit(root)
+
+}
+
+###############################################################
+# Fitness Function
+#
+# GA attempts to MAXIMIZE this score.
+#
+# We first:
+#
+#   1) Rotate the nodes indicated by the chromosome.
+#   2) Compute the resulting displayed tip order.
+#   3) Compare it with the desired ordering.
+#
+# A perfect match gives a fitness of 0.
+# Worse matches become increasingly negative.
+###############################################################
+
+evaluate_tree_rotation <- function(chromosome,
+                                   tree,
+                                   target){
+
+  modified_tree <- tree
+
+  nTip <- length(tree$tip.label)
+
+  node_ids <- (nTip + 1):(nTip + tree$Nnode)
+
+  #############################################################
+  # Apply chromosome
+  #############################################################
+
+  for(i in seq_along(chromosome)){
+
+    if(chromosome[i] == 1){
+
+      modified_tree <- ape::rotate(
+        modified_tree,
+        node_ids[i]
+      )
+
+    }
+
+  }
+
+  #############################################################
+  # Obtain current displayed tip order
+  #############################################################
+
+  current_order <- get_tip_order(modified_tree)
+
+  #############################################################
+  # Fitness
+  #
+  # match() returns the position of each current tip within the
+  # target ordering.
+  #
+  # Smaller positional differences mean a better ordering.
+  #############################################################
+
+  fitness <-
+    -sum(abs(
+      match(current_order, target) -
+      seq_along(target)
+    ))
+
+  return(fitness)
+
+}
+```
+
+Since the chromosome is simply a binary string of 0s and 1s, the GA package can be used directly with type = "binary". During the optimization, the genetic algorithm evolves a population of candidate rotation patterns using selection, crossover, and mutation to search for increasingly better tip orderings. Once the algorithm terminates, the best chromosome found represents the optimal (or near-optimal) combination of internal-node rotations. Applying this chromosome to the original tree produces the reordered tree, whose tip arrangement most closely matches the desired target ordering while preserving the original tree topology.
+
+```{r}
+###############################################################
+# Number of genes
+#
+# One binary gene per internal node.
+###############################################################
+
+n_bits <- my_tree$Nnode
+
+###############################################################
+# Run the Genetic Algorithm
+###############################################################
+
+ga_result <- ga(
+
+  type = "binary",
+
+  fitness = function(chr)
+    evaluate_tree_rotation(
+      chr,
+      my_tree,
+      target_order
+    ),
+
+  nBits = n_bits,
+
+  popSize = 50,
+
+  maxiter = 100,
+
+  pmutation = 0.10,
+
+  elitism = 2,
+
+  monitor = gaMonitor
+
+)
+
+###############################################################
+# Best chromosome found
+###############################################################
+
+best_chromosome <- as.vector(
+  ga_result@solution[1,]
+)
+
+###############################################################
+# Apply the winning chromosome
+###############################################################
+
+best_tree <- my_tree
+
+node_ids <-
+  (length(my_tree$tip.label)+1):
+  (length(my_tree$tip.label)+my_tree$Nnode)
+
+for(i in seq_along(best_chromosome)){
+
+  if(best_chromosome[i] == 1){
+
+    best_tree <- ape::rotate(
+      best_tree,
+      node_ids[i]
+    )
+
+  }
+
+}
+
+###############################################################
+# Display Results
+###############################################################
+
+cat("\nTarget order:\n")
+print(target_order)
+
+cat("\nBest obtained order:\n")
+print(get_tip_order(best_tree))
+
+cat("\nFitness:\n")
+print(max(ga_result@fitness))
+
+###############################################################
+# Plot comparison
+###############################################################
+
+par(mfrow = c(1,2))
+
+plot(my_tree,
+     main = "Original Tree")
+
+plot(best_tree,
+     main = "GA Optimized Tree")
+```
+
+## Bonus
+
+Now let's take this a step further, we can attempt to solve a tree optimization problem using a Monte Carlo optimization strategy (MCMC/simulated annealing style) where it searches through possible tree states to find one that best matches a desired tip ordering.
+In simple words, the objective is to search through many possible trees (including different evolutionary structures) and find one whose tip arrangement is closest to the target.
+```{r}
+# install.packages(c("ape", "phangorn"))
+
+
+library(ape)
+library(phangorn)
+
+# Set up a reproducible example
+set.seed(42)
+my_tree <- rtree(15) 
+target_order <- sample(my_tree$tip.label) # Random target for demonstration
+```
+"Energy" is the mathematical distance between the tree's current visual layout and the desired target order. It will use the Sum of Squared Rank Differences (similar to Spearman's rank correlation), which is highly stable for MCMC gradients. 
+At each step of the Markov chain, it proposes a random change to the tree. So it defines two distinct moves: a visual rotation (Type A) and a structural topology shift (Type B).
+
+```{r}
+calculate_energy <- function(tree, target) {
+  # Extract the top-to-bottom visual plotting order of the tips
+  is_tip <- tree$edge[,2] <= Ntip(tree)
+  current_order <- tree$tip.label[tree$edge[is_tip, 2]]
+  
+  # Find the rank (position) of each current tip in the target list
+  current_ranks <- match(current_order, target)
+  target_ranks <- 1:length(target)
+  
+  # Calculate the squared distance between current positions and target positions
+  # Lower energy = better match. 0 = perfect match.
+  energy <- sum((current_ranks - target_ranks)^2)
+  
+  return(energy)
+}
+# Move Type A: Visual Rotation
+# Rotates the left/right branches of a single random internal node.
+propose_rotation <- function(tree) {
+  num_tips <- Ntip(tree)
+  internal_nodes <- (num_tips + 1):(num_tips + tree$Nnode)
+  node_to_rotate <- sample(internal_nodes, 1)
+  
+  return(rotate(tree, node_to_rotate))
+}
+
+# Move Type B: Structural Topology Shift (NNI)
+# Performs a Nearest Neighbor Interchange to slightly alter evolutionary history.
+propose_topology_shift <- function(tree) {
+  # phangorn::nni generates all possible NNI neighbors for the tree
+  neighbors <- nni(tree)
+  
+  # Randomly sample exactly one neighbor from the multiPhylo object
+  random_neighbor <- sample(neighbors, size = 1)[[1]]
+  return(random_neighbor)
+}
+run_mcmc_sampler <- function(start_tree, target, iterations = 2000, 
+                             start_temp = 100, cooling_rate = 0.99, 
+                             topology_prob = 0.3) {
+  
+  current_tree <- start_tree
+  current_energy <- calculate_energy(current_tree, target)
+  
+  best_tree <- current_tree
+  best_energy <- current_energy
+  
+  temperature <- start_temp
+  energy_history <- numeric(iterations)
+  
+  for (i in 1:iterations) {
+    # 1. Choose a proposal mechanism
+    # We prioritize rotations, but allow topology shifts based on topology_prob
+    if (runif(1) < topology_prob) {
+      proposed_tree <- propose_topology_shift(current_tree)
+    } else {
+      proposed_tree <- propose_rotation(current_tree)
+    }
+    
+    # 2. Calculate the energy of the proposed state
+    proposed_energy <- calculate_energy(proposed_tree, target)
+    delta_energy <- proposed_energy - current_energy
+    
+    # 3. Metropolis-Hastings Acceptance Criterion
+    # Always accept if it's an improvement (delta_energy < 0)
+    # If worse, accept with a probability proportional to the temperature
+    acceptance_prob <- exp(-delta_energy / temperature)
+    
+    if (delta_energy < 0 || runif(1) < acceptance_prob) {
+      current_tree <- proposed_tree
+      current_energy <- proposed_energy
+      
+      # Track the absolute best state found during the chain
+      if (current_energy < best_energy) {
+        best_tree <- current_tree
+        best_energy <- current_energy
+      }
+    }
+    
+    # Record history and cool the system down
+    energy_history[i] <- current_energy
+    temperature <- temperature * cooling_rate
+  }
+  
+  return(list(
+    optimized_tree = best_tree, 
+    best_energy = best_energy,
+    history = energy_history
+  ))
+}
+```
+
+Run the sampler and visualize the results. Because this is a stochastic process, plotting the energy history is crucial—it proves that the algorithm successfully converged on a minimum rather than getting stuck.
+
+```{r}
+# Run the sampler
+# Note: Increasing 'topology_prob' allows the tree structure to break more aggressively 
+# to match the target. Setting it to 0.0 makes it purely a visual rotation optimizer.
+mcmc_results <- run_mcmc_sampler(my_tree, target_order, 
+                                 iterations = 1500, 
+                                 start_temp = 50, 
+                                 cooling_rate = 0.995, 
+                                 topology_prob = 0.4)
+
+# ----------------- Visualizations ----------------- #
+par(mfrow = c(1, 3))
+
+# 1. The Energy Trace (Diagnostics)
+plot(mcmc_results$history, type = "l", col = "blue", 
+     main = "MCMC Energy Trace", 
+     xlab = "Iteration", ylab = "Energy (Distance to Target)")
+abline(h = mcmc_results$best_energy, col = "red", lty = 2)
+
+# 2. Original Tree
+plot(my_tree, main = "Original Tree Topology")
+
+# 3. Optimized Joint-Space Tree
+plot(mcmc_results$optimized_tree, 
+     main = paste("Optimized Tree\nFinal Energy:", mcmc_results$best_energy))
+```
+
+Now for For only visual ordering, we could set topology_prob = 0
+Then it becomes: Only rotations + MCMC search
+although even that is overkill because rotateConstr() already solves the problem.
+
+We could also make it a more elegant solution by applying MCMC to actual DNA alignment data!
+Combining two different concepts here: the Joint Topology-Rotation Space (which I used previously for visual layout optimization) and the question "Which evolutionary tree best explains my DNA alignment?" (which is the core of Bayesian Phylogenetic Inference).
+
+```{r}
+# ---------------------------------------------------------
+# 1. GENERATE DUMMY DNA DATA
+# ---------------------------------------------------------
+set.seed(123)
+# Create a true evolutionary tree with 8 species
+true_tree <- rtree(8)
+# Simulate a DNA alignment of 500 base pairs based on this tree
+dna_alignment <- simSeq(true_tree, l = 500, type = "DNA")
+
+# Create a random starting tree for the MCMC (so it has to work to find the truth)
+start_tree <- rtree(8, tip.label = true_tree$tip.label)
+
+# ---------------------------------------------------------
+# 2. LIKELIHOOD FUNCTION
+# ---------------------------------------------------------
+# Calculates how well a specific tree explains the DNA data
+evaluate_dna_likelihood <- function(tree, alignment) {
+  # The pml() function calculates the likelihood of the tree given the data
+  # using a standard Jukes-Cantor DNA substitution model
+  fit <- pml(tree, data = alignment)
+  return(fit$logLik)
+}
+
+# ---------------------------------------------------------
+# 3. MCMC SAMPLER FUNCTION
+# ---------------------------------------------------------
+run_phylogenetic_mcmc <- function(start_tree, alignment, iterations = 500) {
+  
+  current_tree <- start_tree
+  current_ll <- evaluate_dna_likelihood(current_tree, alignment)
+  
+  # Vectors to store the history of the chain
+  ll_history <- numeric(iterations)
+  sampled_trees <- vector("list", iterations)
+  
+  cat("Running MCMC...\n")
+  
+  for(i in 1:iterations) {
+    # Propose a new topology using Nearest Neighbor Interchange (NNI)
+    nni_neighbors <- nni(current_tree)
+    # Randomly pick one of the NNI neighbors
+    proposed_tree <- nni_neighbors[[sample(length(nni_neighbors), 1)]]
+    
+    # Calculate likelihood of the proposed tree
+    proposed_ll <- evaluate_dna_likelihood(proposed_tree, alignment)
+    
+    # Calculate Metropolis-Hastings acceptance ratio (Log scale)
+    log_alpha <- proposed_ll - current_ll
+    
+    # Accept or Reject
+    # (If log_alpha > 0, it's an improvement and log(runif) will always be less than it)
+    if (log(runif(1)) < log_alpha) {
+      current_tree <- proposed_tree
+      current_ll <- proposed_ll
+    }
+    
+    # Record the state of the chain
+    ll_history[i] <- current_ll
+    sampled_trees[[i]] <- current_tree
+    
+    # Print progress
+    if (i %% 100 == 0) cat("Iteration:", i, "| Log-Likelihood:", round(current_ll, 2), "\n")
+  }
+  
+  # Format output
+  class(sampled_trees) <- "multiPhylo"
+  return(list(trees = sampled_trees, likelihoods = ll_history))
+}
+```
+
+execute the chain:
+```{r}
+# Run the MCMC for 500 iterations
+# (In real research, this would be 1,000,000+ iterations!)
+mcmc_results <- run_phylogenetic_mcmc(start_tree, dna_alignment, iterations = 500)
+
+# Set the plotting layout
+par(mfrow = c(1, 2))
+
+# ----------------- Visualizations ----------------- #
+
+# 1. The MCMC Trace Plot
+# You should see the line climb rapidly and then plateau, 
+# indicating it has found the maximum likelihood topological space.
+plot(mcmc_results$likelihoods, type = "l", col = "darkgreen", lwd = 2,
+     main = "MCMC Log-Likelihood Trace",
+     xlab = "Iteration", ylab = "Log-Likelihood")
+
+# 2. The Consensus Tree
+# We discard the first 20% of iterations as "burn-in"
+burn_in <- 100
+valid_trees <- mcmc_results$trees[burn_in:500]
+
+# Calculate the consensus tree from the posterior distribution
+posterior_consensus <- consensus(valid_trees, p = 0.5)
+
+plot(posterior_consensus, main = "Posterior Consensus Tree")
+```
+
