@@ -371,7 +371,7 @@ plot(optimized_tree,
 ord <- get_plot_order(optimized_tree)
 
 cz <- czek_matrix(
-  traits_ordered,
+  traits,
   order = NULL  # tell RMaCzek not to re-seriate; I already picked the order from anealing
 )
 
