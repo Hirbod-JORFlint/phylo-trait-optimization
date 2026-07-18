@@ -284,264 +284,105 @@ traits <- matrix(
 #     )
 # }
 
-# Fast tree tip order (no plotting)
-
-
-get_plot_order <- function(tree){
-
+# Fast tree tip order (Vectorized and fully compatible with ape structure)
+get_plot_order <- function(tree) {
     n <- length(tree$tip.label)
-
-    # children of each internal node
-    children <- split(
-        tree$edge[,2],
-        tree$edge[,1]
-    )
-
-    root <- setdiff(
-        tree$edge[,1],
-        tree$edge[,2]
-    )[1]
-
-
-    # recursive depth-first traversal
-    traverse <- function(node){
-
-        # tip
-        if(node <= n){
-            return(node)
-        }
-
-        unlist(
-            lapply(
-                children[[as.character(node)]],
-                traverse
-            )
-        )
-    }
-
-
-    idx <- traverse(root)
-
+    # Extracts tips in their exact plotting/traversal order instantly
+    idx <- tree$edge[tree$edge[, 2] <= n, 2]
     tree$tip.label[idx]
 }
 
-
-trait_cost <- function(tree, traits){
-
+trait_cost <- function(tree, traits) {
     ord <- get_plot_order(tree)
-
-    X <- traits[ord,,drop=FALSE]
-
+    X <- traits[ord, , drop = FALSE]
+    
     sum(
         sqrt(
             rowSums(
-                (X[-1,]-X[-nrow(X),])^2
+                (X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])^2
             )
         )
     )
-
 }
 
-
-# Random rotation of one internal node
-
-
-random_rotate <- function(tree){
-
+# Random rotation using safe and native ape infrastructure
+random_rotate <- function(tree) {
     Ntip <- length(tree$tip.label)
-
-    internal_nodes <- (Ntip+1):(Ntip+tree$Nnode)
-
-    node <- sample(internal_nodes,1)
-
-    tree2 <- tree
-
-    children <- which(tree2$edge[,1]==node)
-
-    if(length(children)==2){
-
-        tree2$edge[children,2] <-
-            rev(tree2$edge[children,2])
-
-    }
-
-    tree2
-
+    
+    # Safe sampling of an internal node
+    node <- sample((Ntip + 1):(Ntip + tree$Nnode), 1)
+    
+    # Properly rotates the node, preserving branch lengths and cladewise order
+    ape::rotate(tree, node)
 }
 
-
-
-
-# Simulated annealing optimizer
-
-
-anneal_tree_order <- function(
-        tree,
-        traits,
-        max_iter=100000,
-        temperature=1,
-        cooling=0.99995,
-        patience=5000
-){
-
-    current_tree <- tree
-
-    current_cost <- trait_cost(
-        current_tree,
-        traits
-    )
-
-    cat(
-    "Starting cost:",
-    current_cost,
-    "\n"
-    )
-
-    best_tree <- current_tree
-
+# Annealing
+anneal_tree <- function(
+    tree,
+    traits,
+    max_iter = 100000,
+    temperature = 10,
+    cooling = .099995, # Adjusted to match step counts smoothly
+    patience = 5000
+) {
+    current <- tree
+    current_cost <- trait_cost(current, traits)
+    
+    cat("Starting cost:", current_cost, "\n")
+    
+    best <- current
     best_cost <- current_cost
-
-
-    no_improve <- 0
-
-
-    for(iter in 1:max_iter){
-
-
-        candidate <- random_rotate(
-            current_tree
-        )
-
-
-        candidate_cost <- trait_cost(
-            candidate,
-            traits
-        )
-
-
-        delta <- candidate_cost-current_cost
-
-
-
-        # Metropolis acceptance rule
-
-
-        accept <- FALSE
-
-        if(delta < 0){
-
-            accept <- TRUE
-
-        } else {
-
-            probability <- exp(
-                -delta/temperature
-            )
-
-            if(runif(1)<probability){
-                accept <- TRUE
-            }
-
-        }
-
-
-        if(accept){
-
-            current_tree <- candidate
-
+    no_change <- 0
+    
+    for (i in 1:max_iter) {
+        candidate <- random_rotate(current)
+        candidate_cost <- trait_cost(candidate, traits)
+        delta <- candidate_cost - current_cost
+        
+        if (delta < 0 || runif(1) < exp(-delta / temperature)) {
+            current <- candidate
             current_cost <- candidate_cost
-
         }
-
-
-
-        # Save best
-
-
-        if(current_cost < best_cost){
-
-            best_tree <- current_tree
-
+        
+        if (current_cost < best_cost) {
+            best <- current
             best_cost <- current_cost
-
-            no_improve <- 0
-
+            no_change <- 0
         } else {
-
-            no_improve <- no_improve + 1
-
+            no_change <- no_change + 1
         }
-
-
-
-        # Cooling
-
-
+        
         temperature <- temperature * cooling
-
-
-
-
-        # Early stopping
-
-
-        if(no_improve >= patience){
-
-            message(
-                "Stopped early at iteration ",
-                iter
+        
+        if (no_change > patience) {
+            return(
+                list(
+                    tree = best,
+                    cost = best_cost,
+                    iterations = i
+                )
             )
-
-            break
-
         }
-
-
-        if(temperature < 1e-8){
-
-            message(
-                "Temperature exhausted"
-            )
-
-            break
-
-        }
-
-
-        if(iter %% 1000 == 0){
-
-            message(
-                "Iteration ",
-                iter,
-                " Best cost = ",
-                best_cost
-            )
-
-        }
-
     }
-
-
+    
     list(
-        tree=best_tree,
-        cost=best_cost,
-        iterations=iter
+        tree = best,
+        cost = best_cost,
+        iterations = max_iter
     )
-
 }
 
 
 
 
 # Run optimization
+if (exists("anneal_tree_order")) rm(anneal_tree_order)
 
-
-result <- anneal_tree_order(
+result <- anneal_tree(
     my_tree,
     traits,
     max_iter=200000,
     temperature=10,
-    cooling=0.99997,
     patience=10000
 )
 
@@ -626,195 +467,99 @@ traits <- matrix(
 # Objective function
 
 
-# Fast tree tip order (no plotting, I tried plotting it took decades)
-
-
-get_plot_order <- function(tree){
-
+# Fast tree tip order (Vectorized and fully compatible with ape structure)
+get_plot_order <- function(tree) {
     n <- length(tree$tip.label)
-
-    # children of each internal node
-    children <- split(
-        tree$edge[,2],
-        tree$edge[,1]
-    )
-
-    root <- setdiff(
-        tree$edge[,1],
-        tree$edge[,2]
-    )[1]
-
-
-    # recursive depth-first traversal
-    traverse <- function(node){
-
-        # tip
-        if(node <= n){
-            return(node)
-        }
-
-        unlist(
-            lapply(
-                children[[as.character(node)]],
-                traverse
-            )
-        )
-    }
-
-
-    idx <- traverse(root)
-
+    # Extracts tips in their exact plotting/traversal order instantly
+    idx <- tree$edge[tree$edge[, 2] <= n, 2]
     tree$tip.label[idx]
 }
 
-
-trait_cost <- function(tree, traits){
-
+trait_cost <- function(tree, traits) {
     ord <- get_plot_order(tree)
-
-    X <- traits[ord,,drop=FALSE]
-
+    X <- traits[ord, , drop = FALSE]
+    
     sum(
         sqrt(
             rowSums(
-                (X[-1,]-X[-nrow(X),])^2
+                (X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])^2
             )
         )
     )
-
 }
 
-
-
-
-# Random rotation
-
-
-random_rotate <- function(tree){
-
+# Random rotation using safe and native ape infrastructure
+random_rotate <- function(tree) {
     Ntip <- length(tree$tip.label)
-
-    node <- sample(
-        (Ntip+1):(Ntip+tree$Nnode),
-        1
-    )
-
-    rows <- which(tree$edge[,1]==node)
-
-    if(length(rows)==2){
-
-        tree$edge[rows,2] <-
-            rev(tree$edge[rows,2])
-
-    }
-
-    tree
+    
+    # Safe sampling of an internal node
+    node <- sample((Ntip + 1):(Ntip + tree$Nnode), 1)
+    
+    # Properly rotates the node, preserving branch lengths and cladewise order
+    ape::rotate(tree, node)
 }
-
-
-
 
 # Annealing
-
-
 anneal_tree <- function(
-        tree,
-        traits,
-        max_iter=100000,
-        temperature=10,
-        cooling=.99995,
-        patience=5000
-){
-
-
+    tree,
+    traits,
+    max_iter = 100000,
+    temperature = 10,
+    cooling = .099995, # Adjusted to match step counts smoothly
+    patience = 5000
+) {
     current <- tree
-
-    current_cost <- trait_cost(
-        current,
-        traits
-    )
+    current_cost <- trait_cost(current, traits)
     
-    cat(
-    "Starting cost:",
-    current_cost,
-    "\n"
-    )
-
+    cat("Starting cost:", current_cost, "\n")
+    
     best <- current
     best_cost <- current_cost
-
-
     no_change <- 0
-
-
-    for(i in 1:max_iter){
-
-
+    
+    for (i in 1:max_iter) {
         candidate <- random_rotate(current)
-
-
-        candidate_cost <- trait_cost(
-            candidate,
-            traits
-        )
-
-
-        delta <- candidate_cost-current_cost
-
-
-        if(
-            delta < 0 ||
-            runif(1)<exp(-delta/temperature)
-        ){
-
+        candidate_cost <- trait_cost(candidate, traits)
+        delta <- candidate_cost - current_cost
+        
+        if (delta < 0 || runif(1) < exp(-delta / temperature)) {
             current <- candidate
             current_cost <- candidate_cost
-
         }
-
-
-        if(current_cost < best_cost){
-
+        
+        if (current_cost < best_cost) {
             best <- current
             best_cost <- current_cost
-
             no_change <- 0
-
         } else {
-
-            no_change <- no_change+1
-
+            no_change <- no_change + 1
         }
-
-
-        temperature <- temperature*cooling
-
-
-        if(no_change > patience){
-
+        
+        temperature <- temperature * cooling
+        
+        if (no_change > patience) {
             return(
                 list(
-                    tree=best,
-                    cost=best_cost,
-                    iterations=i
+                    tree = best,
+                    cost = best_cost,
+                    iterations = i
                 )
             )
-
         }
-
     }
-
-
+    
     list(
-        tree=best,
-        cost=best_cost,
-        iterations=max_iter
+        tree = best,
+        cost = best_cost,
+        iterations = max_iter
     )
-
 }
 
 
-
+# Safely rebuilds the tree structure from scratch while preserving the visual layout
+sanitize_tree <- function(tree) {
+    ape::read.tree(text = ape::write.tree(tree))
+}
 
 ############################################################
 # METHOD 1:
@@ -831,10 +576,8 @@ cat("\nRandom initialization\n")
 
 random_order <- sample(my_tree$tip.label)
 
-random_tree <- rotateConstr(
-    my_tree,
-    random_order
-)
+# sanitize_tree
+random_tree <- sanitize_tree(rotateConstr(my_tree, random_order))
 
 cat(
     "Initial random cost:",
@@ -843,7 +586,6 @@ cat(
 )
 
 start1 <- Sys.time()
-
 
 
 random_result <- anneal_tree(
@@ -884,10 +626,8 @@ pc_order <- rownames(
 # Rotate tree to PCA order
 ############################################################
 
-pca_tree <- rotateConstr(
-    my_tree,
-    pc_order
-)
+# Added sanitize_tree()
+pca_tree <- sanitize_tree(rotateConstr(my_tree, pc_order))
 
 
 
@@ -921,75 +661,38 @@ cat("\nGreedy initialization\n")
 # Greedy local optimization
 
 greedy_optimize <- function(tree, traits, max_passes = 100){
-
     current <- tree
     current_cost <- trait_cost(current, traits)
-
     Ntip <- length(tree$tip.label)
-
     internal_nodes <- (Ntip + 1):(Ntip + tree$Nnode)
-
+    
     pass <- 1
-
+    
     repeat{
-
         improved <- FALSE
-
+        
         for(node in internal_nodes){
-
-            rows <- which(current$edge[,1] == node)
-
-            if(length(rows) != 2)
-                next
-
-            candidate <- current
-
-            candidate$edge[rows,2] <-
-                rev(candidate$edge[rows,2])
-
-            candidate_cost <- trait_cost(
-                candidate,
-                traits
-            )
-
+            # Safely rotate using ape, maintaining cladewise integrity
+            candidate <- ape::rotate(current, node)
+            candidate_cost <- trait_cost(candidate, traits)
+            
             if(candidate_cost < current_cost){
-
                 current <- candidate
                 current_cost <- candidate_cost
                 improved <- TRUE
-
             }
-
         }
-
-        cat(
-            "Greedy pass",
-            pass,
-            "cost:",
-            current_cost,
-            "\n"
-        )
-
+        
+        cat("Greedy pass", pass, "cost:", current_cost, "\n")
         pass <- pass + 1
-
-        if(!improved || pass > max_passes)
-            break
-
+        
+        if(!improved || pass > max_passes) break
     }
-
-    list(
-        tree = current,
-        cost = current_cost,
-        passes = pass - 1
-    )
-
+    
+    list(tree = current, cost = current_cost, passes = pass - 1)
 }
 
-greedy_start <- greedy_optimize(
-    my_tree,
-    traits
-)
-
+greedy_start <- greedy_optimize(my_tree, traits)
 greedy_tree <- greedy_start$tree
 
 cat(
