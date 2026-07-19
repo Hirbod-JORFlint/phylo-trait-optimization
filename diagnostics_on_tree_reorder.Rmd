@@ -40,7 +40,7 @@ print(signal)
 
 ## Tanglegrams
 
-If you want to evaluate how heavily your tree's fixed evolutionary branches are constraining your trait sorting, you can use a tanglegram (a visual tool that draws two trees facing each other with lines connecting matching tips)
+If you want to evaluate how heavily the tree's fixed evolutionary branches are constraining the trait sorting, you can use a tanglegram (a visual tool that draws two trees facing each other with lines connecting matching tips)
 
 ```{r}
 # install.packages("phylogram")
@@ -59,13 +59,93 @@ tanglegram(dend_orig, dend_opt, main_left = "Original", main_right = "Optimized"
 
 ```
 
-## 
+## Tree and visual analysis
+
+To experimentally construct and save a tree with the absolute least cost, we can build a new tree topology from scratch using data-driven clustering methods (Hierarchical Clustering and Neighbor-Joining) driven purely by the trait matrix, and then run the simulated annealing algorithm on that to find the ultimate optimal node rotations.By building a tree using hclust() or nj(), we allow similar tips to cluster together immediately. The algorithm groups Tip1 and Tip100 right next to each other on a tiny local node because it doesn't care about their evolutionary past.
+For even better unconstrained cost, use the global optimization from '02_reorder'.
+
+```{r}
+# Make sure ape is loaded for tree handling
+library(ape)
+
+## =============================================================================
+## 1. BUILD TRAIT-DRIVEN TOPOLOGIES (Phenetic Trees)
+## =============================================================================
+
+# Compute the 6-dimensional Euclidean distance matrix between all tips
+trait_dist <- dist(traits)
+
+# Method A: Hierarchical Clustering (UPGMA / Average Linkage)
+# This groups tips purely by overall trait profile similarity
+hc_cluster <- hclust(trait_dist, method = "average")
+trait_tree_hc <- as.phylo(hc_cluster)
+
+# Method B: Neighbor-Joining (NJ)
+# A standard phylogenetic algorithm, but here used entirely on trait distances
+trait_tree_nj <- nj(trait_dist)
+
+## =============================================================================
+## 2. OPTIMIZE THE UNCONSTRAINED TREE
+## =============================================================================
+cat("--- Optimizing the Unconstrained Trait Tree ---\n")
+
+# We use the Hierarchical Clustering tree as our starting unconstrained topology
+# and let simulated annealing find the best leaf arrangement allowed by it.
+unconstrained_result <- anneal_tree(
+    trait_tree_hc,
+    traits,
+    max_iter = 200000,
+    temperature = 10,
+    patience = 10000
+)
+
+absolute_best_tree <- unconstrained_result$tree
+
+## =============================================================================
+## 3. CALCULATE THE THEORETICAL ABSOLUTE FLOOR (Unconstrained Path)
+## =============================================================================
+# As a baseline, what if there was no tree structure at all? 
+# We can project the traits to PC1 and sort them to approximate the optimal TSP path.
+pca_sort_order <- names(sort(prcomp(traits, scale. = TRUE)$x[, 1]))
+X_spatial <- traits[pca_sort_order, , drop = FALSE]
+theoretical_floor <- sum(sqrt(rowSums((X_spatial[-1, , drop=FALSE] - X_spatial[-nrow(X_spatial), , drop=FALSE])^2)))
+
+## =============================================================================
+## 4. COMPARE COSTS & SAVE
+## =============================================================================
+cat("\n=============================================\n")
+cat("            EXPERIMENTAL COST REPORT         \n")
+cat("=============================================\n")
+cat("Original Evolutionary Tree Cost:        ", init_cost, "\n")
+cat("OLO-Optimized Evolutionary Tree Cost:   ", result$cost, "\n")
+cat("---------------------------------------------\n")
+cat("Raw Hierarchical Cluster Tree Cost:     ", trait_cost(trait_tree_hc, traits), "\n")
+cat("Raw Neighbor-Joining Tree Cost:          ", trait_cost(trait_tree_nj, traits), "\n")
+cat("Optimized Unconstrained Tree Cost:      ", unconstrained_result$cost, "\n")
+cat("---------------------------------------------\n")
+cat("Theoretical TSP Floor (No Tree Control):", theoretical_floor, "\n")
+cat("=============================================\n")
+
+# Save absolute lowest-cost tree to a Newick file
+write.tree(absolute_best_tree, file = "least_cost_trait_tree.tre")
+cat("Saved the unconstrained optimal tree to 'least_cost_trait_tree.tre'\n")
+
+## =============================================================================
+## 5. VISUAL INSPECTION
+## =============================================================================
+par(mfrow=c(1,2))
+plot(optimized_tree, show.tip.label=FALSE, main="Best Evolutionary Tree")
+plot(absolute_best_tree, show.tip.label=FALSE, main="Absolute Least Cost Tree")
+```
+
+
+When dealing with 6-dimensional trait data, it is hard to visualize the entire space at once. By running a Principal Component Analysis (PCA), we can compress those 6 traits into a single principal component ($PC_1$) that captures the maximum variance, and then map that variance directly onto the branches of both the original and optimized trees.
 
 ```{r}
 
 # heal tree
 optimized_tree <- sanitize_tree(optimized_tree)
-# 1. Run PCA on your 6-dimensional trait matrix
+# 1. Run PCA on the 6-dimensional trait matrix
 # Scaling is recommended since traits are uniformly random but could vary in scale in real data
 pca_result <- prcomp(traits, scale. = TRUE)
 
@@ -81,5 +161,199 @@ map_optimized <- contMap(optimized_tree, pc1_values, plot=FALSE)
 par(mfrow=c(1,2))
 plot(map_original, sig=2, fsize=0.01, main="Original Tree (PC1 Color Map)")
 plot(map_optimized, sig=2, fsize=0.01, main="OLO Optimized Tree (PC1 Color Map)")
+```
+The most intuitive way to validate an OLO optimization is to plot the tree right next to a full heatmap of all 6 raw traits. The phylo.heatmap function automatically reorders the rows of the trait matrix to match the exact plotting layout of the tree leaves.
+
+```{r}
+# Set up a two-panel plotting window
+par(mfrow=c(1,2))
+
+# Plot the original tree alongside its raw trait matrix layout
+phylo.heatmap(my_tree, traits, 
+              fsize=c(0.01, 0.8, 0.8), # Shrink tip labels to fit 100 tips
+              labels=FALSE,            # Turn off tip text clutter
+              main="Original Tree Trait Layout")
+
+# Plot the OLO optimized tree alongside the exact same trait matrix
+phylo.heatmap(optimized_tree, traits, 
+              fsize=c(0.01, 0.8, 0.8), 
+              labels=FALSE, 
+              main="Optimized Tree Trait Layout")
+```
+this visualization allows us to inspect the intersection of evolutionary history (clades) and trait optimization. In a standard phylogenetic tree, tips that share a recent common ancestor sit next to each other. The OLO algorithm rotates nodes to optimize trait transitions without breaking these ancestral pairs:
+
+```{r}
+library(ggtree)
+library(ggplot2)
+
+# 1. Build the base ggplot objects for both trees
+p1 <- ggtree(my_tree) + ggtitle("Original Structure")
+p2 <- ggtree(optimized_tree) + ggtitle("OLO Optimized Structure")
+
+# 2. Overlay the 6-dimensional trait matrix as an aligned heatmap grid
+# offset shifts the matrix away from the tips; width controls matrix thickness
+plot_orig_heatmap <- gheatmap(p1, as.data.frame(traits), 
+                              offset=0.1, 
+                              width=0.6, 
+                              colnames_position="top", 
+                              colnames_angle=45, 
+                              colnames_offset_y=1.2,
+                              font.size=3) + 
+                     scale_fill_viridis_c(option = "plasma", name="Trait Value")
+
+plot_opt_heatmap  <- gheatmap(p2, as.data.frame(traits), 
+                              offset=0.1, 
+                              width=0.6, 
+                              colnames_position="top", 
+                              colnames_angle=45, 
+                              colnames_offset_y=1.2,
+                              font.size=3) + 
+                     scale_fill_viridis_c(option = "plasma", name="Trait Value")
+
+# 3. Print the plots to the active viewport device
+print(plot_orig_heatmap)
+# Open a new window or clear plot to view the second
+print(plot_opt_heatmap)
+```
+## Neighbor Jump-Distance Distribution
+
+Our optimization minimizes the total path distance between consecutive leaves. Looking at the total cost doesn't tell us if we solved the whole tree uniformly, or if we fixed 99 leaves but left one massive, catastrophic jump in the middle.We can calculate the specific vector of neighbor-to-neighbor Euclidean step distances:
+$$d_i = \sqrt{\sum_{j=1}^{m} (X_{i+1, j} - X_{i, j})^2}$$
+```{r}
+# Function to extract raw step distances between adjacent tips
+get_neighbor_distances <- function(tree, traits) {
+    ord <- get_plot_order(tree)
+    X <- traits[ord, , drop = FALSE]
+    sqrt(rowSums((X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])^2))
+}
+
+dist_orig <- get_neighbor_distances(my_tree, traits)
+dist_opt  <- get_neighbor_distances(optimized_tree, traits)
+
+# Plot overlapping density distributions
+plot(density(dist_orig), col="red", lwd=2, xlim=range(c(dist_orig, dist_opt)),
+     main="Distribution of Trait 'Jumps' Between Adjacent Tips", xlab="Euclidean Distance Step")
+lines(density(dist_opt), col="darkgreen", lwd=2)
+legend("topright", legend=c("Original Tree", "OLO Optimized"), col=c("red", "darkgreen"), lty=1, lwd=2)
+
+# Quantitative Summary Table
+summary_stats <- rbind(
+    Original = summary(dist_orig),
+    Optimized = summary(dist_opt)
+)
+print(summary_stats)
+```
+
+## Trait-by-Trait Stress
+
+Because the original data has 6 continuous dimensions, a basic distance calculation aggregates them all together. It is highly likely that the tree structure matches some traits perfectly while conflicting with others. We can isolate the variance contribution of each single trait.
+
+```{r}
+get_dimensional_stress <- function(tree, traits) {
+    ord <- get_plot_order(tree)
+    X <- traits[ord, , drop = FALSE]
+    # Sum of absolute or squared differences per column
+    colSums(abs(X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE]))
+}
+
+stress_orig <- get_dimensional_stress(my_tree, traits)
+stress_opt  <- get_dimensional_stress(optimized_tree, traits)
+
+# Barplot comparison of individual traits
+stress_matrix <- rbind(Original = stress_orig, Optimized = stress_opt)
+barplot(stress_matrix, beside=TRUE, col=c("coral", "steelblue"),
+        main="Stress Contribution per Individual Trait Dimension",
+        ylab="Total Absolute Step Variance")
+legend("topright", legend=rownames(stress_matrix), fill=c("coral", "steelblue"))
+```
+## Trait Space Trajectory Path (PCA Space Walk)
+
+Instead of looking at the tree, we can look directly at the 6-dimensional trait space projected into 2D using your PCA results. By drawing a continuous path that connects the tips in their exact plotting order, we can visualize the OLO optimization as a path-smoothing problem (akin to the Traveling Salesperson Problem).
+
+```{r}
+# 1. Compute 2D PCA coordinates
+pca_res <- prcomp(traits, scale. = TRUE)
+pca_df <- as.data.frame(pca_res$x[, 1:2])
+
+# 2. Extract plotting orders
+ord_orig <- get_plot_order(my_tree)
+ord_opt  <- get_plot_order(optimized_tree)
+
+# 3. Set up side-by-side plots
+par(mfrow = c(1, 2))
+
+# Plot Original Tree Path
+plot(pca_df$PC1, pca_df$PC2, type = "p", col = "grey", pch = 19,
+     xlab = "PC1", ylab = "PC2", main = "Original Path through Trait Space")
+lines(pca_df$PC1[match(ord_orig, rownames(pca_df))], 
+      pca_df$PC2[match(ord_orig, rownames(pca_df))], 
+      col = "firebrick", lwd = 1.5)
+
+# Plot Optimized Tree Path
+plot(pca_df$PC1, pca_df$PC2, type = "p", col = "grey", pch = 19,
+     xlab = "PC1", ylab = "PC2", main = "OLO Optimized Path through Trait Space")
+lines(pca_df$PC1[match(ord_opt, rownames(pca_df))], 
+      pca_df$PC2[match(ord_opt, rownames(pca_df))], 
+      col = "dodgerblue", lwd = 1.5)
+```
+
+## Principal Component Cost Decomposition
+
+A global Euclidean cost function aggregates all dimensions into a single scalar. This hides whether the optimizer is successfully smoothing all dimensions or selectively optimizing high-variance axes while leaving minor axes chaotic.By projecting the 6-dimensional traits into orthogonal PCA space, we can calculate the step-by-step leaf transition cost independently for each Principal Component ($PC_1$ through $PC_6$).
+
+```{r}
+# 1. Compute PCA on raw traits
+pca_res <- prcomp(traits, scale. = TRUE)
+PC_matrix <- pca_res$x
+
+# 2. Function to compute total step distance for each individual PC axis
+get_pc_dropped_costs <- function(tree, PC_data) {
+    ord <- get_plot_order(tree)
+    X_ordered <- PC_data[ord, , drop = FALSE]
+    # Calculate absolute first-differences along each column
+    colSums(abs(X_ordered[-1, , drop = FALSE] - X_ordered[-nrow(X_ordered), , drop = FALSE]))
+}
+
+cost_per_pc_orig <- get_pc_dropped_costs(my_tree, PC_matrix)
+cost_per_pc_opt  <- get_pc_dropped_costs(optimized_tree, PC_matrix)
+
+# 3. Plot the Scree Cost Breakdown
+cost_bars <- rbind(Original = cost_per_pc_orig, Optimized = cost_per_pc_opt)
+barplot(cost_bars, beside = TRUE, col = c("indianred1", "mediumpurple3"),
+        main = "Optimization Cost Reduction per Principal Component",
+        xlab = "Eigenaxis", ylab = "Absolute Path Distance")
+legend("topright", legend = rownames(cost_bars), fill = c("indianred1", "mediumpurple3"))
+```
+
+## Kinetic Trajectory Acceleration in 2D PCA Space
+
+When the 1D leaf layout path is mapped onto a 2D PCA biplot ($PC_1 \times PC_2$), a well-optimized tree should look like a smooth, continuous string with minimal directional changes. An unoptimized tree will look jagged, making sharp U-turns across the space.We can quantify this visual roughness by calculating the Kinetic Acceleration Vector ($\Delta^2 X_i$) at each leaf step position. Higher acceleration values indicate violent directional shifts in trait space.
+$$\Delta^2 X_i = X_{i+1} - 2X_i + X_{i-1}$$
+
+```{r}
+compute_path_acceleration <- function(tree, PC_data) {
+    ord <- get_plot_order(tree)
+    # Extract coordinates for the first two principal components
+    X_2d <- PC_data[ord, 1:2]
+    
+    # Compute first difference (velocity vectors)
+    v <- diff(X_2d)
+    # Compute second difference (acceleration vectors)
+    a <- diff(v)
+    
+    # Return the magnitude of acceleration at each step
+    rowSums(a^2)
+}
+
+accel_orig <- compute_path_acceleration(my_tree, PC_matrix)
+accel_opt  <- compute_path_acceleration(optimized_tree, PC_matrix)
+
+# Plot acceleration magnitudes along the leaf index sequence
+plot(accel_orig, type = "l", col = "salmon", log = "y", lwd = 1.5,
+     xlab = "Leaf Chain Index Step (2 to N-1)", ylab = "Acceleration Magnitude (Log Scale)",
+     main = "Path Kinetic Instability Profile")
+lines(accel_opt, col = "cadetblue", lwd = 1.5)
+legend("topright", legend = c("Original (High Inertia)", "Optimized (Smooth Trajectory)"), 
+       col = c("salmon", "cadetblue"), lty = 1, lwd = 2)
 ```
 

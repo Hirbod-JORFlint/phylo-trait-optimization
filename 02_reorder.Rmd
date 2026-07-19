@@ -32,7 +32,7 @@ my_tree <- rtree(5, tip.label = c("A", "B", "C", "D", "E"))
 my_tree$tip.label 
 # Output is: "A" "B" "C" "D" "E" (but visual order depends on topology)
 
-# Define your desired target order
+# Define the desired target order
 desired_order <- c("E", "C", "A", "D", "B")
 
 # Reorder the tree topology to match the constraint
