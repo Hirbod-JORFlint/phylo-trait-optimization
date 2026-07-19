@@ -63,7 +63,23 @@ tanglegram(dend_orig, dend_opt, main_left = "Original", main_right = "Optimized"
 
 ```{r}
 
-# Reconstruct ancestral states for a trait across all internal nodes
-anc_states <- ace(traits[, "Trait3"], my_tree, type = "continuous", method = "ML")
+# heal tree
+optimized_tree <- sanitize_tree(optimized_tree)
+# 1. Run PCA on your 6-dimensional trait matrix
+# Scaling is recommended since traits are uniformly random but could vary in scale in real data
+pca_result <- prcomp(traits, scale. = TRUE)
+
+# 2. Extract the first Principal Component (PC1) as a named vector
+pc1_values <- pca_result$x[, 1]
+names(pc1_values) <- rownames(traits)
+
+# 3. Compute ancestral states and map PC1 onto both topologies
+map_original  <- contMap(my_tree, pc1_values, plot=FALSE)
+map_optimized <- contMap(optimized_tree, pc1_values, plot=FALSE)
+
+# 4. Plot side-by-side to inspect the OLO visual smoothing effect
+par(mfrow=c(1,2))
+plot(map_original, sig=2, fsize=0.01, main="Original Tree (PC1 Color Map)")
+plot(map_optimized, sig=2, fsize=0.01, main="OLO Optimized Tree (PC1 Color Map)")
 ```
 

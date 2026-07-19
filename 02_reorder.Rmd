@@ -316,6 +316,11 @@ random_rotate <- function(tree) {
     ape::rotate(tree, node)
 }
 
+# Safely rebuilds the tree structure from scratch while preserving the visual layout
+sanitize_tree <- function(tree) {
+    ape::read.tree(text = ape::write.tree(tree))
+}
+
 # Annealing
 anneal_tree <- function(
     tree,
@@ -382,6 +387,7 @@ result <- anneal_tree(
     my_tree,
     traits,
     max_iter=200000,
+    
     temperature=10,
     patience=10000
 )
