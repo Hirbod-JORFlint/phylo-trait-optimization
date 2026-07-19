@@ -1,0 +1,1050 @@
+---
+title: "tree_orderer2"
+author: "hirgh815"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Fist I want to clarify the difference between these two function I found:
+
+## ape rotateConstr() and phytools minRotate()
+
+The rotateConstr() function rotates internal nodes to find the closest possible match to the desired_order vector without altering the underlying tree topology (i.e., it doesn't change who is related to whom, just how it's visualized).
+The minRotate() is from phytools. It also leaves the topology unchanged.
+Instead of directly following the supplied ordering, it searches over allowable node rotations to minimize disagreement between the current tip order and the desired tip order.
+
+The disagreement is measured by the number of pairwise inversions. For small tress they are equal, but these algorithm differ when we encounter cases where more than one way exists to rotate a tree without changing its evolutionary relationships, and the software must choose one arrangement.
+
+```{r}
+#install.packages("ape")
+library(ape)
+library(phytools)
+
+# Create a random tree with 5 tips
+set.seed(42)
+my_tree <- rtree(5, tip.label = c("A", "B", "C", "D", "E"))
+
+# Let's see the current tip order
+my_tree$tip.label 
+# Output is: "A" "B" "C" "D" "E" (but visual order depends on topology)
+
+# Define your desired target order
+desired_order <- c("E", "C", "A", "D", "B")
+
+# Reorder the tree topology to match the constraint
+reordered_tree_1 <- rotateConstr(my_tree, desired_order)
+reordered_tree_2 <- minRotate(my_tree, desired_order)
+
+# Check the new visual tip order
+#reordered_tree$tip.label
+
+par(mfrow = c(1, 3)) # Side-by-side plotting
+
+# Original Tree
+plot(my_tree, main = "Original Tree")
+
+# Reordered Tree using ape
+plot(reordered_tree_1, main = "Match to Desired Order 1")
+
+# Reordered Tree using phytools
+plot(reordered_tree_2, main = "Match to Desired Order 2")
+
+print(all.equal(reordered_tree_1,reordered_tree_2))
+
+```
+
+## Solution 1
+
+Originally I gave a complete ordering (desired_order) that was already known. Now, the ordering itself has to be inferred from the trait values, while respecting the topology of the tree. The PCA algorithm can be a heuristic for generating such an ordering but it is also very approximate.
+
+```{r}
+library(ape)
+library(phytools)
+
+traits <- matrix(runif(30, 0, 5), nrow = 5, dimnames = list(my_tree$tip.label))
+
+pc <- prcomp(traits, scale.=TRUE)
+
+score <- pc$x[,1]
+
+desired_order <- names(sort(score))
+
+desired_order
+
+
+tree_Rotate <- rotateConstr(my_tree, desired_order) # or minRotate(my_tree, desired_order)
+
+par(mfrow=c(1,2))
+
+plot(my_tree,
+     main="Original")
+
+plot(tree_Rotate,
+     main="Rotate (PC1 order)")
+```
+
+## Solution 2
+
+Another robust mathematical approach is seriation. This treats the problem of ordering the tips as a Traveling Salesperson Problem (TSP), find the shortest path (1D order again) that visits every single tip's trait vector exactly once, minimizing the step-by-step distance.
+
+```{r}
+# install.packages("seriation")
+library(ape)
+library(seriation)
+
+# Simulate a 3D trait matrix
+dist_matrix <- dist(traits)
+
+# Use TSP solver to find the optimal 1D path minimizing total step-wise distance
+tsp_sol <- seriate(dist_matrix, method = "TSP")
+suggested_order <- get_order(tsp_sol) # Extract the 1D permutation
+
+# Map the indices back to tip labels
+target_sequence <- labels(dist_matrix)[suggested_order]
+
+# Rotate the tree to match this optimal TSP sequence
+optimized_tree <- rotateConstr(my_tree, target_sequence) # or minRotate(my_tree, target_sequence)
+
+par(mfrow=c(1,2))
+
+plot(my_tree,
+     main="Original")
+
+plot(optimized_tree,
+     main="Rotate (TSP order)")
+```
+
+
+## Solution 3
+
+For such a small tree I can explore everything:
+
+```{r}
+
+## Cost function
+
+# ordering_cost <- function(order, traits){
+# 
+#     X <- traits[order,,drop=FALSE]
+# 
+#     sum(sqrt(rowSums((X[-1,]-X[-nrow(X),])^2)))
+# 
+# }
+
+# 1. Get plot order safely via .PlotPhyloEnv
+get_plot_order <- function(tree){
+    oldpar <- par(no.readonly = TRUE)
+    on.exit(par(oldpar))
+
+    plot(tree, plot = FALSE)
+    pp <- get("last_plot.phylo", envir = .PlotPhyloEnv)
+    n <- length(tree$tip.label)
+    
+    # Order tips based on their vertical positioning (yy) in the plot
+    tree$tip.label[order(pp$yy[1:n])]
+}
+
+# 2. Calculate continuous trait transition distance along the tip profile
+trait_cost <- function(tree, traits){
+    ord <- get_plot_order(tree)
+    X <- traits[ord, , drop = FALSE]
+    
+    sum(
+        sqrt(
+            rowSums((X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])^2)
+        )
+    )
+}
+
+# 3. Generate every valid topological rotation using a Breadth-First Search (BFS)
+all_rotations <- function(tree){
+    Ntip <- length(tree$tip.label)
+    internal <- (Ntip + 1):(Ntip + tree$Nnode)
+    
+    # Initialize queue and visited set using Newick format strings
+    initial_key <- write.tree(tree)
+    seen <- initial_key
+    queue <- list(tree)
+    all_trees <- list(tree)
+    
+    head_idx <- 1
+    while(head_idx <= length(queue)){
+        current_tree <- queue[[head_idx]]
+        head_idx <- head_idx + 1
+        
+        for(node in internal){
+            # Use ape::rotate to flip the chosen internal node
+            tmp <- rotate(current_tree, node)
+            key <- write.tree(tmp)
+            
+            if(!(key %in% seen)){
+                seen <- c(seen, key)
+                queue[[length(queue) + 1]] <- tmp
+                all_trees[[length(all_trees) + 1]] <- tmp
+            }
+        }
+    }
+    return(all_trees)
+}
+
+# 4. Evaluate every single unique rotation configuration
+trees <- all_rotations(my_tree)
+costs <- numeric(length(trees))
+orders <- vector("list", length(trees))
+
+for(i in seq_along(trees)){
+    # FIX: Pass the tree object to trait_cost, not the raw text vector of labels
+    costs[i] <- trait_cost(trees[[i]], traits)
+    orders[[i]] <- get_plot_order(trees[[i]])
+}
+
+# Find the global minimum configuration
+best <- which.min(costs)
+best_tree <- trees[[best]]
+best_order <- orders[[best]]
+best_cost <- costs[[best]]
+
+# Output results
+cat("Best order:\n")
+print(best_order)
+cat("\nCost =", best_cost, "\n")
+
+# Layout comparison plots
+par(mfrow = c(1, 2))
+plot(my_tree, main = paste("Original (Cost:", round(trait_cost(my_tree, traits), 2), ")"))
+plot(best_tree, main = paste("Optimized (Cost:", round(best_cost, 2), ")"))
+```
+
+## solution 4
+
+For larger trees (e.g., 50–1000 tips), the brute-force enumeration above becomes infeasible. So instead I use meta-heuristic. Practical approach is to Start from the current tree embedding.
+Randomly rotate internal nodes (swap child branches).
+Accept better solutions always; worse solutions with probability $p=exp(-\frac{\Delta}{T})$
+where T decreases over time (simulated annealing). Also Stop early if no improvement occurs for many iterations, temperature becomes very small, or maximum iterations reached.
+
+```{r}
+set.seed(42)
+
+my_tree <- rtree(
+    100,
+    tip.label=paste0("Tip",1:100)
+)
+
+traits <- matrix(
+    runif(100*6,0,5),
+    nrow=100,
+    dimnames=list(my_tree$tip.label,
+                  paste0("Trait",1:6))
+)
+
+
+
+# Cost function
+
+
+# get_plot_order <- function(tree){
+# 
+#     oldpar <- par(no.readonly = TRUE)
+# 
+#     on.exit(par(oldpar))
+# 
+#     plot(
+#         tree,
+#         plot=FALSE
+#     )
+# 
+#     pp <- get(
+#         "last_plot.phylo",
+#         envir=.PlotPhyloEnv
+#     )
+# 
+#     n <- length(tree$tip.label)
+# 
+#     tree$tip.label[
+#         order(pp$yy[1:n])
+#     ]
+# }
+# 
+# trait_cost <- function(tree, traits){
+# 
+#     ord <- get_plot_order(tree)
+# 
+#     X <- traits[ord,,drop=FALSE]
+# 
+#     sum(
+#         sqrt(
+#             rowSums(
+#                 (X[-1,]-X[-nrow(X),])^2
+#             )
+#         )
+#     )
+# }
+
+# Fast tree tip order (no plotting)
+
+
+get_plot_order <- function(tree){
+
+    n <- length(tree$tip.label)
+
+    # children of each internal node
+    children <- split(
+        tree$edge[,2],
+        tree$edge[,1]
+    )
+
+    root <- setdiff(
+        tree$edge[,1],
+        tree$edge[,2]
+    )[1]
+
+
+    # recursive depth-first traversal
+    traverse <- function(node){
+
+        # tip
+        if(node <= n){
+            return(node)
+        }
+
+        unlist(
+            lapply(
+                children[[as.character(node)]],
+                traverse
+            )
+        )
+    }
+
+
+    idx <- traverse(root)
+
+    tree$tip.label[idx]
+}
+
+
+trait_cost <- function(tree, traits){
+
+    ord <- get_plot_order(tree)
+
+    X <- traits[ord,,drop=FALSE]
+
+    sum(
+        sqrt(
+            rowSums(
+                (X[-1,]-X[-nrow(X),])^2
+            )
+        )
+    )
+
+}
+
+
+# Random rotation of one internal node
+
+
+random_rotate <- function(tree){
+
+    Ntip <- length(tree$tip.label)
+
+    internal_nodes <- (Ntip+1):(Ntip+tree$Nnode)
+
+    node <- sample(internal_nodes,1)
+
+    tree2 <- tree
+
+    children <- which(tree2$edge[,1]==node)
+
+    if(length(children)==2){
+
+        tree2$edge[children,2] <-
+            rev(tree2$edge[children,2])
+
+    }
+
+    tree2
+
+}
+
+
+
+
+# Simulated annealing optimizer
+
+
+anneal_tree_order <- function(
+        tree,
+        traits,
+        max_iter=100000,
+        temperature=1,
+        cooling=0.99995,
+        patience=5000
+){
+
+    current_tree <- tree
+
+    current_cost <- trait_cost(
+        current_tree,
+        traits
+    )
+
+    cat(
+    "Starting cost:",
+    current_cost,
+    "\n"
+    )
+
+    best_tree <- current_tree
+
+    best_cost <- current_cost
+
+
+    no_improve <- 0
+
+
+    for(iter in 1:max_iter){
+
+
+        candidate <- random_rotate(
+            current_tree
+        )
+
+
+        candidate_cost <- trait_cost(
+            candidate,
+            traits
+        )
+
+
+        delta <- candidate_cost-current_cost
+
+
+
+        # Metropolis acceptance rule
+
+
+        accept <- FALSE
+
+        if(delta < 0){
+
+            accept <- TRUE
+
+        } else {
+
+            probability <- exp(
+                -delta/temperature
+            )
+
+            if(runif(1)<probability){
+                accept <- TRUE
+            }
+
+        }
+
+
+        if(accept){
+
+            current_tree <- candidate
+
+            current_cost <- candidate_cost
+
+        }
+
+
+
+        # Save best
+
+
+        if(current_cost < best_cost){
+
+            best_tree <- current_tree
+
+            best_cost <- current_cost
+
+            no_improve <- 0
+
+        } else {
+
+            no_improve <- no_improve + 1
+
+        }
+
+
+
+        # Cooling
+
+
+        temperature <- temperature * cooling
+
+
+
+
+        # Early stopping
+
+
+        if(no_improve >= patience){
+
+            message(
+                "Stopped early at iteration ",
+                iter
+            )
+
+            break
+
+        }
+
+
+        if(temperature < 1e-8){
+
+            message(
+                "Temperature exhausted"
+            )
+
+            break
+
+        }
+
+
+        if(iter %% 1000 == 0){
+
+            message(
+                "Iteration ",
+                iter,
+                " Best cost = ",
+                best_cost
+            )
+
+        }
+
+    }
+
+
+    list(
+        tree=best_tree,
+        cost=best_cost,
+        iterations=iter
+    )
+
+}
+
+
+
+
+# Run optimization
+
+
+result <- anneal_tree_order(
+    my_tree,
+    traits,
+    max_iter=200000,
+    temperature=10,
+    cooling=0.99997,
+    patience=10000
+)
+
+
+
+# Results
+
+
+optimized_tree <- result$tree
+
+init_cost <- trait_cost(my_tree,traits)
+cat(
+    "Initial cost:",
+    init_cost,
+    "\n"
+)
+
+
+cat(
+    "Final cost:",
+    result$cost,
+    "\n"
+)
+
+cat(
+    "Iterations:",
+    result$iterations,
+    "\n"
+)
+
+
+
+# Plot example
+
+
+par(mfrow=c(1,2))
+
+plot(my_tree,
+     show.tip.label=FALSE,
+     main="Original")
+
+plot(optimized_tree,
+     show.tip.label=FALSE,
+     main="Optimized")
+```
+
+
+## Solution 5
+
+In the last section, I compare simulated annealing for two strategies. Random initialization vs informed initialization. Instead of starting from an arbitrary tree embedding, I start near a (biologically?) meaningful arrangement, but random start had a better result at the cost of many more iterations. Simulated annealing then only needs to make local corrections. Experiment:
+Random initialization + annealing
+PCA + rotateConstr initialization + annealing
+```{r}
+
+
+
+# Simulate tree and traits
+
+
+set.seed(42)
+
+nTips <- 500
+
+my_tree <- rtree(
+    nTips,
+    tip.label=paste0("Tip",1:nTips)
+)
+
+
+traits <- matrix(
+    runif(nTips*10,0,5),
+    nrow=nTips,
+    dimnames=list(
+        my_tree$tip.label,
+        paste0("Trait",1:10)
+    )
+)
+
+
+
+############################################################
+# Objective function
+
+
+# Fast tree tip order (no plotting, I tried plotting it took decades)
+
+
+get_plot_order <- function(tree){
+
+    n <- length(tree$tip.label)
+
+    # children of each internal node
+    children <- split(
+        tree$edge[,2],
+        tree$edge[,1]
+    )
+
+    root <- setdiff(
+        tree$edge[,1],
+        tree$edge[,2]
+    )[1]
+
+
+    # recursive depth-first traversal
+    traverse <- function(node){
+
+        # tip
+        if(node <= n){
+            return(node)
+        }
+
+        unlist(
+            lapply(
+                children[[as.character(node)]],
+                traverse
+            )
+        )
+    }
+
+
+    idx <- traverse(root)
+
+    tree$tip.label[idx]
+}
+
+
+trait_cost <- function(tree, traits){
+
+    ord <- get_plot_order(tree)
+
+    X <- traits[ord,,drop=FALSE]
+
+    sum(
+        sqrt(
+            rowSums(
+                (X[-1,]-X[-nrow(X),])^2
+            )
+        )
+    )
+
+}
+
+
+
+
+# Random rotation
+
+
+random_rotate <- function(tree){
+
+    Ntip <- length(tree$tip.label)
+
+    node <- sample(
+        (Ntip+1):(Ntip+tree$Nnode),
+        1
+    )
+
+    rows <- which(tree$edge[,1]==node)
+
+    if(length(rows)==2){
+
+        tree$edge[rows,2] <-
+            rev(tree$edge[rows,2])
+
+    }
+
+    tree
+}
+
+
+
+
+# Annealing
+
+
+anneal_tree <- function(
+        tree,
+        traits,
+        max_iter=100000,
+        temperature=10,
+        cooling=.99995,
+        patience=5000
+){
+
+
+    current <- tree
+
+    current_cost <- trait_cost(
+        current,
+        traits
+    )
+    
+    cat(
+    "Starting cost:",
+    current_cost,
+    "\n"
+    )
+
+    best <- current
+    best_cost <- current_cost
+
+
+    no_change <- 0
+
+
+    for(i in 1:max_iter){
+
+
+        candidate <- random_rotate(current)
+
+
+        candidate_cost <- trait_cost(
+            candidate,
+            traits
+        )
+
+
+        delta <- candidate_cost-current_cost
+
+
+        if(
+            delta < 0 ||
+            runif(1)<exp(-delta/temperature)
+        ){
+
+            current <- candidate
+            current_cost <- candidate_cost
+
+        }
+
+
+        if(current_cost < best_cost){
+
+            best <- current
+            best_cost <- current_cost
+
+            no_change <- 0
+
+        } else {
+
+            no_change <- no_change+1
+
+        }
+
+
+        temperature <- temperature*cooling
+
+
+        if(no_change > patience){
+
+            return(
+                list(
+                    tree=best,
+                    cost=best_cost,
+                    iterations=i
+                )
+            )
+
+        }
+
+    }
+
+
+    list(
+        tree=best,
+        cost=best_cost,
+        iterations=max_iter
+    )
+
+}
+
+
+
+
+############################################################
+# METHOD 1:
+# Random starting layout
+############################################################
+
+cat(
+    "Initial cost:",
+    trait_cost(my_tree,traits),
+    "\n"
+)
+
+cat("\nRandom initialization\n")
+
+random_order <- sample(my_tree$tip.label)
+
+random_tree <- rotateConstr(
+    my_tree,
+    random_order
+)
+
+cat(
+    "Initial random cost:",
+    trait_cost(random_tree, traits),
+    "\n"
+)
+
+start1 <- Sys.time()
+
+
+
+random_result <- anneal_tree(
+    random_tree,
+    traits
+)
+
+time1 <- Sys.time()-start1
+
+
+
+############################################################
+# METHOD 2:
+# PCA initialization
+############################################################
+
+cat("\nPCA initialization\n")
+
+
+############################################################
+# PCA scores
+############################################################
+
+pc <- prcomp(
+    traits,
+    scale.=TRUE
+)
+
+
+pc_order <- rownames(
+    traits
+)[
+    order(pc$x[,1])
+]
+
+
+############################################################
+# Rotate tree to PCA order
+############################################################
+
+pca_tree <- rotateConstr(
+    my_tree,
+    pc_order
+)
+
+
+
+
+
+cat(
+    "Initial PCA cost:",
+    trait_cost(pca_tree,traits),
+    "\n"
+)
+
+
+
+start2 <- Sys.time()
+
+pca_result <- anneal_tree(
+    pca_tree,
+    traits
+)
+
+time2 <- Sys.time()-start2
+
+
+############################################################
+# METHOD 3:
+# PCA + Greedy + Annealing
+############################################################
+
+cat("\nGreedy initialization\n")
+
+# Greedy local optimization
+
+greedy_optimize <- function(tree, traits, max_passes = 100){
+
+    current <- tree
+    current_cost <- trait_cost(current, traits)
+
+    Ntip <- length(tree$tip.label)
+
+    internal_nodes <- (Ntip + 1):(Ntip + tree$Nnode)
+
+    pass <- 1
+
+    repeat{
+
+        improved <- FALSE
+
+        for(node in internal_nodes){
+
+            rows <- which(current$edge[,1] == node)
+
+            if(length(rows) != 2)
+                next
+
+            candidate <- current
+
+            candidate$edge[rows,2] <-
+                rev(candidate$edge[rows,2])
+
+            candidate_cost <- trait_cost(
+                candidate,
+                traits
+            )
+
+            if(candidate_cost < current_cost){
+
+                current <- candidate
+                current_cost <- candidate_cost
+                improved <- TRUE
+
+            }
+
+        }
+
+        cat(
+            "Greedy pass",
+            pass,
+            "cost:",
+            current_cost,
+            "\n"
+        )
+
+        pass <- pass + 1
+
+        if(!improved || pass > max_passes)
+            break
+
+    }
+
+    list(
+        tree = current,
+        cost = current_cost,
+        passes = pass - 1
+    )
+
+}
+
+greedy_start <- greedy_optimize(
+    my_tree,
+    traits
+)
+
+greedy_tree <- greedy_start$tree
+
+cat(
+    "Initial greedy cost:",
+    greedy_start$cost,
+    "\n"
+)
+
+start3 <- Sys.time()
+
+greedy_result <- anneal_tree(
+    greedy_tree,
+    traits
+)
+
+time3 <- Sys.time()-start3
+
+############################################################
+# Compare
+############################################################
+
+results <- data.frame(
+
+    Method=c(
+        "Random start",
+        "PCA + rotateConstr",
+        "Greedy + Annealing"
+    ),
+
+    Initial_cost=c(
+        trait_cost(random_tree, traits),
+        trait_cost(pca_tree, traits),
+        greedy_start$cost
+    ),
+
+    Final_cost=c(
+        random_result$cost,
+        pca_result$cost,
+        greedy_result$cost
+    ),
+
+    Iterations=c(
+        random_result$iterations,
+        pca_result$iterations,
+        greedy_result$iterations
+    ),
+
+    Time_seconds=c(
+        as.numeric(time1),
+        as.numeric(time2),
+        as.numeric(time3)
+    )
+
+)
+
+print(results)
+```
+
