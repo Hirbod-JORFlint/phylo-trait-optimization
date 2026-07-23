@@ -996,3 +996,184 @@ plot(out$tree, main = "Tree with OLO-optimized tip order")
 ```
 
 
+## Initial MILP implementation with `ompr`
+
+This is a first-pass mixed integer programming version of the fixed-topology
+tree ordering problem. It is intentionally simple and is meant for small trees:
+it uses position-assignment variables for every tip and directed adjacency
+variables for every neighbouring position. The tree topology is enforced by a
+binary rotation variable at each internal node.
+
+```{r}
+
+# install.packages(c("ompr", "ompr.roi", "ROI.plugin.glpk"))
+library(ape)
+library(magrittr)
+library(ompr)
+library(ompr.roi)
+library(ROI.plugin.glpk)
+
+# Return descendant tip indices for every node in an ape phylo object.
+get_descendant_tips <- function(phy) {
+  n_tip <- length(phy$tip.label)
+  n_total <- n_tip + phy$Nnode
+  children <- vector("list", n_total)
+
+  for (e in seq_len(nrow(phy$edge))) {
+    parent <- phy$edge[e, 1]
+    child <- phy$edge[e, 2]
+    children[[parent]] <- c(children[[parent]], child)
+  }
+
+  memo <- vector("list", n_total)
+  collect <- function(node) {
+    if (!is.null(memo[[node]])) return(memo[[node]])
+    if (node <= n_tip) {
+      memo[[node]] <<- node
+    } else {
+      memo[[node]] <<- sort(unique(unlist(lapply(children[[node]], collect))))
+    }
+    memo[[node]]
+  }
+
+  for (node in seq_len(n_total)) collect(node)
+  memo
+}
+
+# Solve the tree reordering problem as a MILP.
+#
+# Variables:
+#   x[i, p]      = 1 if tip i is placed at position p
+#   adj[i, j, p] = 1 if tip i is directly followed by tip j at positions p,p+1
+#   rot[k]       = 1 if internal node k's two child clades are swapped
+#
+# The topology constraints force the two child clades of every internal node to
+# appear as contiguous blocks. rot[k] decides which block comes first.
+reorder_tree_ompr <- function(phy,
+                              d,
+                              solver = "glpk",
+                              time_limit = 60,
+                              verbose = TRUE) {
+  if (!is.matrix(d)) d <- as.matrix(d)
+
+  n_tip <- length(phy$tip.label)
+  stopifnot(nrow(d) == n_tip, ncol(d) == n_tip)
+
+  rownames(d) <- colnames(d) <- as.character(seq_len(n_tip))
+
+  children <- get_children_list(phy)
+  desc_tips <- get_descendant_tips(phy)
+  internal_nodes <- seq.int(n_tip + 1L, n_tip + phy$Nnode)
+
+  # Keep the implementation binary-tree-only for now. Polytomies can be handled
+  # later by either resolving them first or by generalising the rotation model.
+  child_pairs <- lapply(internal_nodes, function(node) {
+    kids <- children[[node]]
+    if (length(kids) != 2L) {
+      stop("Node ", node, " has ", length(kids),
+           " children; use ape::multi2di() before calling reorder_tree_ompr().")
+    }
+    list(
+      node = node,
+      left = desc_tips[[kids[1L]]],
+      right = desc_tips[[kids[2L]]]
+    )
+  })
+
+  n_internal <- length(internal_nodes)
+  big_m <- n_tip
+
+  model <- MILPModel() %>%
+    add_variable(x[i, p], i = 1:n_tip, p = 1:n_tip, type = "binary") %>%
+    add_variable(adj[i, j, p],
+                 i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L),
+                 type = "binary", i != j) %>%
+    add_variable(rot[k], k = 1:n_internal, type = "binary") %>%
+    set_objective(
+      sum_expr(d[i, j] * adj[i, j, p],
+               i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L), i != j),
+      "min"
+    ) %>%
+    add_constraint(sum_expr(x[i, p], p = 1:n_tip) == 1, i = 1:n_tip) %>%
+    add_constraint(sum_expr(x[i, p], i = 1:n_tip) == 1, p = 1:n_tip) %>%
+    add_constraint(adj[i, j, p] <= x[i, p],
+                   i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L), i != j) %>%
+    add_constraint(adj[i, j, p] <= x[j, p + 1L],
+                   i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L), i != j) %>%
+    add_constraint(adj[i, j, p] >= x[i, p] + x[j, p + 1L] - 1,
+                   i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L), i != j)
+
+  # Topology constraints. For each internal node, either all tips in the left
+  # child clade must be before all tips in the right child clade, or vice versa.
+  # The final order is therefore reachable by rotations of the original tree.
+  for (k in seq_along(child_pairs)) {
+    left <- child_pairs[[k]]$left
+    right <- child_pairs[[k]]$right
+
+    for (a in left) {
+      for (b in right) {
+        model <- model %>%
+          add_constraint(
+            sum_expr(p * x[a, p], p = 1:n_tip) + 1 <=
+              sum_expr(p * x[b, p], p = 1:n_tip) + big_m * rot[k]
+          ) %>%
+          add_constraint(
+            sum_expr(p * x[b, p], p = 1:n_tip) + 1 <=
+              sum_expr(p * x[a, p], p = 1:n_tip) + big_m * (1 - rot[k])
+          )
+      }
+    }
+  }
+
+  result <- solve_model(
+    model,
+    with_ROI(
+      solver = solver,
+      verbose = verbose,
+      tm_limit = time_limit * 1000
+    )
+  )
+
+  x_solution <- get_solution(result, x[i, p])
+  chosen <- x_solution[x_solution$value > 0.5, c("i", "p")]
+  chosen <- chosen[order(chosen$p), ]
+
+  ord_idx <- chosen$i
+  ord_labels <- phy$tip.label[ord_idx]
+  phy_ord <- rotateConstr(phy, constraint = ord_labels)
+
+  list(
+    tree = phy_ord,
+    order = ord_labels,
+    order_index = ord_idx,
+    objective_value = objective_value(result),
+    solver_status = solver_status(result),
+    result = result
+  )
+}
+
+```
+
+```{r}
+
+# Example run using the same trait distance matrix as the OLO section above.
+# Keep this to small trees while the ompr formulation is still experimental.
+d <- make_trait_dist(traits, my_tree, method = "euclidean", scale_traits = TRUE)
+
+ompr_out <- reorder_tree_ompr(
+  phy = my_tree,
+  d = d,
+  solver = "glpk",
+  time_limit = 60,
+  verbose = TRUE
+)
+
+cat("MILP status:", ompr_out$solver_status, "\n")
+cat("MILP adjacent trait-dissimilarity:", ompr_out$objective_value, "\n")
+cat("MILP tip order:\n"); print(ompr_out$order)
+
+plot(ompr_out$tree, main = "Tree with ompr MILP-optimized tip order")
+
+```
+
+
