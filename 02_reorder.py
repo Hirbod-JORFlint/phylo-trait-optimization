@@ -157,232 +157,329 @@ def reorder_tree_clades(tree, optimal_tip_order):
 # ---------------------------------------------------------
 
 ## Bar_joseph dynamic programming
+
+class OLOState:
+
+    def __init__(self, leaves):
+
+        self.leaves = leaves
+
+        # dictionary:
+        # (first leaf, last leaf) -> cost
+        self.cost = {}
+
+        # traceback:
+        # (first,last) -> (orientation,left endpoints,right endpoints)
+        self.trace = {}
+
+
+
 def bar_joseph_olo(tree, traits_df):
 
-    start = time.time()
+    start_time=time.time()
 
-    leaves = [x.name for x in tree.get_terminals()]
-    leaf_id = {x:i for i,x in enumerate(leaves)}
 
-    X = traits_df.loc[leaves].values
+    # ----------------------------
+    # Leaf indexing
+    # ----------------------------
 
-    D = np.linalg.norm(
-        X[:,None,:] - X[None,:,:],
+    terminals = tree.get_terminals()
+
+    names=[x.name for x in terminals]
+
+    leaf_id={
+        name:i for i,name in enumerate(names)
+    }
+
+
+    X=traits_df.loc[names].values
+
+
+    # pairwise distances
+    D=np.linalg.norm(
+        X[:,None,:]-X[None,:,:],
         axis=2
     )
 
 
-    class NodeDP:
-        def __init__(self):
-            self.leaves = []
-            self.cost = {}
-            self.choice = {}
+
+    # ----------------------------
+    # Bottom-up DP
+    # ----------------------------
+
+    def DP(clade):
 
 
-    def solve(clade):
-
-        node = NodeDP()
-
-
-        # --------------------------
-        # Terminal node
-        # --------------------------
+        # terminal
         if clade.is_terminal():
 
-            i = leaf_id[clade.name]
+            idx=leaf_id[clade.name]
 
-            node.leaves = [i]
-            node.cost[(i,i)] = 0
+            state=OLOState([idx])
 
-            return node
+            state.cost[(idx,idx)] = 0
 
-
-
-        A = solve(clade.clades[0])
-        B = solve(clade.clades[1])
-
-        node.leaves = A.leaves + B.leaves
+            return state
 
 
 
-        # --------------------------
-        # Orientation function
-        # --------------------------
-        def merge(left,right,orientation):
-
-            cost = {}
-            choice = {}
+        left=DP(clade.clades[0])
+        right=DP(clade.clades[1])
 
 
-            for i in left.leaves:
-                for j in right.leaves:
-
-                    best = np.inf
-                    bx = None
-                    by = None
+        state=OLOState(
+            left.leaves + right.leaves
+        )
 
 
-                    for x in left.leaves:
+        # ---------------------------------
+        # left subtree before right subtree
+        # ---------------------------------
 
-                        if (i,x) not in left.cost:
-                            continue
+        for a in left.leaves:
 
-                        for y in right.leaves:
-
-                            if (y,j) not in right.cost:
-                                continue
-
-                            value = (
-                                left.cost[(i,x)]
-                                +
-                                D[x,y]
-                                +
-                                right.cost[(y,j)]
-                            )
+            for b in right.leaves:
 
 
-                            if value < best:
-                                best=value
-                                bx=x
-                                by=y
+                best=np.inf
+                best_x=None
+                best_y=None
 
 
-                    cost[(i,j)] = best
-                    choice[(i,j)] = (
-                        orientation,
-                        bx,
-                        by
+                for x in left.leaves:
+
+                    c1=left.cost.get(
+                        (a,x),
+                        np.inf
                     )
 
-            return cost, choice
+                    if np.isinf(c1):
+                        continue
+
+
+                    for y in right.leaves:
+
+                        c2=right.cost.get(
+                            (y,b),
+                            np.inf
+                        )
+
+
+                        if np.isinf(c2):
+                            continue
+
+
+                        value=(
+                            c1
+                            +
+                            D[x,y]
+                            +
+                            c2
+                        )
+
+
+                        if value < best:
+
+                            best=value
+                            best_x=x
+                            best_y=y
 
 
 
-        # left -> right
-        LR_cost, LR_choice = merge(
-            A,B,"LR"
-        )
+                state.cost[(a,b)] = best
 
-
-        # right -> left
-        RL_cost, RL_choice = merge(
-            B,A,"RL"
-        )
-
-
-        # --------------------------
-        # Select better orientation
-        # --------------------------
-
-        for i,j in LR_cost:
-
-            if LR_cost[(i,j)] <= RL_cost.get((j,i),np.inf):
-
-                node.cost[(i,j)] = LR_cost[(i,j)]
-
-                node.choice[(i,j)] = LR_choice[(i,j)]
-
-            else:
-
-                node.cost[(j,i)] = RL_cost[(j,i)]
-
-                node.choice[(j,i)] = RL_choice[(j,i)]
-
-
-        return node
+                state.trace[(a,b)] = (
+                    "LR",
+                    best_x,
+                    best_y
+                )
 
 
 
-    root_dp = solve(tree.root)
+        # ---------------------------------
+        # right subtree before left subtree
+        # ---------------------------------
+
+        for a in right.leaves:
+
+            for b in left.leaves:
 
 
-    # global optimum
-
-    best = np.inf
-    best_pair=None
-
-    for pair,value in root_dp.cost.items():
-
-        if value < best:
-            best=value
-            best_pair=pair
+                best=np.inf
+                best_x=None
+                best_y=None
 
 
+                for x in right.leaves:
 
-    # --------------------------
-    # Recover ordering
-    # --------------------------
+                    c1=right.cost.get(
+                        (a,x),
+                        np.inf
+                    )
 
-    def recover(clade, start_leaf, end_leaf):
+
+                    if np.isinf(c1):
+                        continue
+
+
+
+                    for y in left.leaves:
+
+
+                        c2=left.cost.get(
+                            (y,b),
+                            np.inf
+                        )
+
+
+                        if np.isinf(c2):
+                            continue
+
+
+
+                        value=(
+                            c1
+                            +
+                            D[x,y]
+                            +
+                            c2
+                        )
+
+
+
+                        if value < best:
+
+                            best=value
+                            best_x=x
+                            best_y=y
+
+
+
+                state.cost[(a,b)] = best
+
+                state.trace[(a,b)] = (
+                    "RL",
+                    best_x,
+                    best_y
+                )
+
+
+
+        return state
+
+
+
+    root_state=DP(tree.root)
+
+
+
+    # ----------------------------
+    # Choose global optimum
+    # ----------------------------
+
+    optimum=np.inf
+    end_pair=None
+
+
+    for pair,value in root_state.cost.items():
+
+        if value < optimum:
+
+            optimum=value
+            end_pair=pair
+
+
+
+    # ----------------------------
+    # Traceback
+    # ----------------------------
+
+    def traceback(clade,a,b,state):
+
 
         if clade.is_terminal():
-            return [clade.name]
+
+            return [
+                clade.name
+            ]
 
 
-        A,B = clade.clades
+        left=DP_cache[id(clade.clades[0])]
+        right=DP_cache[id(clade.clades[1])]
 
 
-        # Try both possible child orientations
-
-        order1 = recover(
-            A,
-            start_leaf,
-            end_leaf
-        ) + recover(
-            B,
-            start_leaf,
-            end_leaf
-        )
+        direction,x,y = state.trace[(a,b)]
 
 
-        order2 = recover(
-            B,
-            start_leaf,
-            end_leaf
-        ) + recover(
-            A,
-            start_leaf,
-            end_leaf
-        )
+        if direction=="LR":
+
+            left_order=traceback(
+                clade.clades[0],
+                a,
+                x,
+                left
+            )
+
+            right_order=traceback(
+                clade.clades[1],
+                y,
+                b,
+                right
+            )
 
 
-        c1 = trait_cost_from_order(
-            order1,
-            traits_df
-        )
+            return left_order+right_order
 
-        c2 = trait_cost_from_order(
-            order2,
-            traits_df
-        )
-
-
-        if c1 <= c2:
-            clade.clades=[A,B]
-            return order1
 
         else:
-            clade.clades=[B,A]
-            return order2
 
-
-
-    def trait_cost_from_order(order,traits):
-
-        Z = traits.loc[order].values
-
-        return np.sum(
-            np.linalg.norm(
-                np.diff(Z,axis=0),
-                axis=1
+            right_order=traceback(
+                clade.clades[1],
+                a,
+                x,
+                right
             )
-        )
+
+            left_order=traceback(
+                clade.clades[0],
+                y,
+                b,
+                left
+            )
 
 
-    order = recover(
+            return right_order+left_order
+
+
+
+    # store DP states
+    DP_cache={}
+
+
+    def fill_cache(clade):
+
+        state=DP(clade)
+
+        DP_cache[id(clade)] = state
+
+        if not clade.is_terminal():
+
+            for child in clade.clades:
+                fill_cache(child)
+
+
+    fill_cache(tree.root)
+
+
+
+    root_state=DP_cache[id(tree.root)]
+
+
+    order=traceback(
         tree.root,
-        best_pair[0],
-        best_pair[1]
+        end_pair[0],
+        end_pair[1],
+        root_state
     )
 
 
@@ -392,10 +489,11 @@ def bar_joseph_olo(tree, traits_df):
     )
 
 
-    elapsed=time.time()-start
-
-
-    return tree,best,elapsed
+    return (
+        tree,
+        optimum,
+        time.time()-start_time
+    )
 
 
 ## simulated annealing in python
