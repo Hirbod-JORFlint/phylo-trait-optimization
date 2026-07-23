@@ -136,29 +136,29 @@ def trait_cost(tree, traits_df):
 
 
 def tree_to_linkage(tree, tip_labels):
-  """Converts a Bio.Phylo Tree into a SciPy linkage matrix Z (N-1, 4)."""
+  """Converts a Bio.Phylo Tree into a strictly monotonic SciPy linkage matrix Z (N-1, 4)."""
   label_to_id = {name: i for i, name in enumerate(tip_labels)}
   Z_rows = []
-  next_id = len(tip_labels)
 
   def _traverse(clade):
-    nonlocal next_id
     if clade.is_terminal():
-      return label_to_id[clade.name], 1, 0.0
+      return label_to_id[clade.name], 1
 
     children_info = [_traverse(c) for c in clade.clades]
 
     curr = children_info
     while len(curr) > 1:
-      c1_id, c1_count, c1_h = curr.pop(0)
-      c2_id, c2_count, c2_h = curr.pop(0)
+      c1_id, c1_count = curr.pop(0)
+      c2_id, c2_count = curr.pop(0)
 
       new_count = c1_count + c2_count
-      new_h = max(c1_h, c2_h) + 1.0
+
+      # FIXED: Height MUST increase strictly with row index in Z
+      new_h = float(len(Z_rows) + 1)
+      next_id = len(tip_labels) + len(Z_rows)
 
       Z_rows.append([c1_id, c2_id, new_h, new_count])
-      curr.insert(0, (next_id, new_count, new_h))
-      next_id += 1
+      curr.insert(0, (next_id, new_count))
 
     return curr[0]
 
