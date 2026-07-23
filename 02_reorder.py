@@ -160,344 +160,196 @@ def reorder_tree_clades(tree, optimal_tip_order):
 # 3. Solve Optimal Leaf Ordering
 # ---------------------------------------------------------
 
-## Bar_joseph dynamic programming
+## Bar-Joseph dynamic programming (exact OLO)
+#
+# M_v(u, w) = minimum adjacent-sum cost of ordering every leaf in subtree v
+#             so that leaf u is at one end and leaf w is at the other.
+#
+# Leaf (base case):  M_v(u, u) = 0.
+#
+# Internal node v with children L, R  (u ∈ L, w ∈ R):
+#   M_v(u, w) = min_{b ∈ L, c ∈ R} [ M_L(u, b) + D(b, c) + M_R(c, w) ]
+#
+# R-before-L layouts are recovered by reversal symmetry:
+#   the reversed ordering has the same adjacent-sum cost because D is symmetric,
+#   so M_v(w, u) = M_v(u, w).  We only store the L-before-R rectangular table.
+#
+# Complexity: O(n³) total across the tree via factored minimisation:
+#   Pass 1 –  g(b, w) = min_{c ∈ R} [ D(b, c) + M_R(c, w) ]   O(|L|·|R|²)
+#   Pass 2 –  M_v(u, w) = min_{b ∈ L} [ M_L(u, b) + g(b, w) ]  O(|L|²·|R|)
+
 
 class OLOState:
+    """DP state for one subtree.
 
-    def __init__(self, leaves):
+    Attributes
+    ----------
+    leaves : list[int]
+        Global leaf indices in this subtree, in an arbitrary canonical order.
+    left_leaves / right_leaves : list[int] | None
+        Leaf indices of the left / right child (None for a tip).
+    cost : dict[(int,int) -> float]
+        M_v(u, w) for u in left_leaves, w in right_leaves (or u == w for a tip).
+    trace : dict[(int,int) -> (int,int)]
+        Optimal seam pair (b, c) that achieves M_v(u, w).
+    left / right : OLOState | None
+        Child states.
+    """
 
-        self.leaves = leaves
-
-        # dictionary:
-        # (first leaf, last leaf) -> cost
+    def __init__(self, leaves, left_leaves=None, right_leaves=None):
+        self.leaves = list(leaves)
+        self.left_leaves = (
+            list(left_leaves) if left_leaves is not None else None
+        )
+        self.right_leaves = (
+            list(right_leaves) if right_leaves is not None else None
+        )
         self.cost = {}
-
-        # traceback:
-        # (first,last) -> (orientation,left endpoints,right endpoints)
         self.trace = {}
-
+        self.left = None
+        self.right = None
 
 
 def bar_joseph_olo(tree, traits_df):
+    start_time = time.time()
 
-    start_time=time.time()
-
-
-    # ----------------------------
-    # Leaf indexing
-    # ----------------------------
-
+    # ------------------------------------------------------------------
+    # Leaf indexing  (global IDs 0 … n-1 matched to trait-matrix rows)
+    # ------------------------------------------------------------------
     terminals = tree.get_terminals()
+    names = [t.name for t in terminals]
+    leaf_id = {name: i for i, name in enumerate(names)}
 
-    names=[x.name for x in terminals]
+    X = traits_df.loc[names].values
+    D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)   # (n, n)
 
-    leaf_id={
-        name:i for i,name in enumerate(names)
-    }
-
-
-    X=traits_df.loc[names].values
-
-
-    # pairwise distances
-    D=np.linalg.norm(
-        X[:,None,:]-X[None,:,:],
-        axis=2
-    )
-
-
-
-    # ----------------------------
+    # ------------------------------------------------------------------
     # Bottom-up DP
-    # ----------------------------
-
+    # ------------------------------------------------------------------
     def DP(clade):
-
-
-        # terminal
         if clade.is_terminal():
-
-            idx=leaf_id[clade.name]
-
-            state=OLOState([idx])
-
-            state.cost[(idx,idx)] = 0
-
+            idx = leaf_id[clade.name]
+            state = OLOState([idx])
+            state.cost[(idx, idx)] = 0.0          # M_tip(idx, idx) = 0
             return state
 
+        if len(clade.clades) != 2:
+            raise ValueError(
+                "Tree must be fully bifurcating; resolve polytomies first."
+            )
 
+        left  = DP(clade.clades[0])
+        right = DP(clade.clades[1])
+        Lleaves = left.leaves      # global indices
+        Rleaves = right.leaves
+        nL = len(Lleaves)
+        nR = len(Rleaves)
 
-        left=DP(clade.clades[0])
-        right=DP(clade.clades[1])
+        # Build full symmetric M matrices for both children so that
+        #   M_L[i, j] = M_L(Lleaves[i], Lleaves[j])
+        # Entry (i, j) is finite only when i ≠ j (or the subtree is a tip).
+        L_mat = _symmetric_cost_matrix(left)
+        R_mat = _symmetric_cost_matrix(right)
 
+        state = OLOState(Lleaves + Rleaves, Lleaves, Rleaves)
+        state.left  = left
+        state.right = right
 
-        state=OLOState(
-            left.leaves + right.leaves
-        )
+        # ----------------------------------------------------------
+        # Pass 1  –  g[b, w] = min_{c∈R} [ D(b,c) + M_R(c,w) ]
+        #           + argmin index  g_arg[b, w]
+        # ----------------------------------------------------------
+        g     = np.full((nL, nR), np.inf)
+        g_arg = np.zeros((nL, nR), dtype=int)
 
+        for bi in range(nL):
+            b_global = Lleaves[bi]
+            D_b_R = D[b_global, Rleaves]          # D(b, c) for every c ∈ R
 
-        # ---------------------------------
-        # left subtree before right subtree
-        # ---------------------------------
+            for wi in range(nR):
+                # R_mat[:, wi] = M_R(c, w) for every c ∈ R
+                seam_costs = D_b_R + R_mat[:, wi]  # D(b,c) + M_R(c,w)
+                ci = int(np.argmin(seam_costs))
+                g[bi, wi]     = seam_costs[ci]
+                g_arg[bi, wi] = ci
 
-        for a in left.leaves:
+        # ----------------------------------------------------------
+        # Pass 2  –  M_v(u,w) = min_{b∈L} [ M_L(u,b) + g(b,w) ]
+        #           + seam pair (b*, c*) stored in state.trace
+        # ----------------------------------------------------------
+        for ui in range(nL):
+            u = Lleaves[ui]
+            M_L_u = L_mat[ui, :]          # M_L(u, b) for every b ∈ L
 
-            for b in right.leaves:
-
-
-                best=np.inf
-                best_x=None
-                best_y=None
-
-
-                for x in left.leaves:
-
-                    c1=left.cost.get(
-                        (a,x),
-                        np.inf
-                    )
-
-                    if np.isinf(c1):
-                        continue
-
-
-                    for y in right.leaves:
-
-                        c2=right.cost.get(
-                            (y,b),
-                            np.inf
-                        )
-
-
-                        if np.isinf(c2):
-                            continue
-
-
-                        value=(
-                            c1
-                            +
-                            D[x,y]
-                            +
-                            c2
-                        )
-
-
-                        if value < best:
-
-                            best=value
-                            best_x=x
-                            best_y=y
-
-
-
-                state.cost[(a,b)] = best
-
-                state.trace[(a,b)] = (
-                    "LR",
-                    best_x,
-                    best_y
-                )
-
-
-
-        # ---------------------------------
-        # right subtree before left subtree
-        # ---------------------------------
-
-        for a in right.leaves:
-
-            for b in left.leaves:
-
-
-                best=np.inf
-                best_x=None
-                best_y=None
-
-
-                for x in right.leaves:
-
-                    c1=right.cost.get(
-                        (a,x),
-                        np.inf
-                    )
-
-
-                    if np.isinf(c1):
-                        continue
-
-
-
-                    for y in left.leaves:
-
-
-                        c2=left.cost.get(
-                            (y,b),
-                            np.inf
-                        )
-
-
-                        if np.isinf(c2):
-                            continue
-
-
-
-                        value=(
-                            c1
-                            +
-                            D[x,y]
-                            +
-                            c2
-                        )
-
-
-
-                        if value < best:
-
-                            best=value
-                            best_x=x
-                            best_y=y
-
-
-
-                state.cost[(a,b)] = best
-
-                state.trace[(a,b)] = (
-                    "RL",
-                    best_x,
-                    best_y
-                )
-
-
+            for wi in range(nR):
+                w = Rleaves[wi]
+                totals = M_L_u + g[:, wi]  # M_L(u,b) + g(b,w) for every b ∈ L
+                bi = int(np.argmin(totals))
+                state.cost[(u, w)]  = float(totals[bi])
+                state.trace[(u, w)] = (Lleaves[bi], Rleaves[g_arg[bi, wi]])
 
         return state
 
+    root_state = DP(tree.root)
 
-
-    root_state=DP(tree.root)
-
-
-
-    # ----------------------------
-    # Choose global optimum
-    # ----------------------------
-
-    optimum=np.inf
-    end_pair=None
-
-
-    for pair,value in root_state.cost.items():
-
+    # ------------------------------------------------------------------
+    # Choose the globally optimal end-pair at the root
+    # ------------------------------------------------------------------
+    optimum  = np.inf
+    end_pair = None
+    for pair, value in root_state.cost.items():
         if value < optimum:
+            optimum  = value
+            end_pair = pair
 
-            optimum=value
-            end_pair=pair
+    # ------------------------------------------------------------------
+    # Traceback  –  recover the full leaf ordering from stored seam pairs
+    # ------------------------------------------------------------------
+    def traceback(state, a, b):
+        """Return leaf-name list for subtree *state* with a at left end, b at right."""
+        if len(state.leaves) == 1:
+            return [names[state.leaves[0]]]
 
+        left_set  = set(state.left_leaves)
+        right_set = set(state.right_leaves)
 
+        if a in left_set and b in right_set:
+            x, y = state.trace[(a, b)]        # seam: x ∈ L, y ∈ R
+            return (traceback(state.left,  a, x)
+                    + traceback(state.right, y, b))
 
-    # ----------------------------
-    # Traceback
-    # ----------------------------
+        if a in right_set and b in left_set:
+            # M is symmetric; reversing the (b,a) layout gives the (a,b) layout.
+            return traceback(state, b, a)[::-1]
 
-    def traceback(clade,a,b,state):
+        raise ValueError(f"Invalid boundary pair ({a}, {b})")
 
+    order = traceback(root_state, end_pair[0], end_pair[1])
+    reorder_tree_clades(tree, order)
 
-        if clade.is_terminal():
-
-            return [
-                clade.name
-            ]
-
-
-        left=DP_cache[id(clade.clades[0])]
-        right=DP_cache[id(clade.clades[1])]
-
-
-        direction,x,y = state.trace[(a,b)]
-
-
-        if direction=="LR":
-
-            left_order=traceback(
-                clade.clades[0],
-                a,
-                x,
-                left
-            )
-
-            right_order=traceback(
-                clade.clades[1],
-                y,
-                b,
-                right
-            )
+    return tree, optimum, time.time() - start_time
 
 
-            return left_order+right_order
+def _symmetric_cost_matrix(state):
+    """Build the full |leaves|×|leaves| M matrix for a subtree.
 
-
-        else:
-
-            right_order=traceback(
-                clade.clades[1],
-                a,
-                x,
-                right
-            )
-
-            left_order=traceback(
-                clade.clades[0],
-                y,
-                b,
-                left
-            )
-
-
-            return right_order+left_order
-
-
-
-    # store DP states
-    DP_cache={}
-
-
-    def fill_cache(clade):
-
-        state=DP(clade)
-
-        DP_cache[id(clade)] = state
-
-        if not clade.is_terminal():
-
-            for child in clade.clades:
-                fill_cache(child)
-
-
-    fill_cache(tree.root)
-
-
-
-    root_state=DP_cache[id(tree.root)]
-
-
-    order=traceback(
-        tree.root,
-        end_pair[0],
-        end_pair[1],
-        root_state
-    )
-
-
-    reorder_tree_clades(
-        tree,
-        order
-    )
-
-
-    return (
-        tree,
-        optimum,
-        time.time()-start_time
-    )
+    Only cross-child entries (u∈L, w∈R) are stored in state.cost.
+    The matrix is completed by the symmetry M(w,u) = M(u,w).
+    Diagonal entries are 0 for tips, inf otherwise (u cannot equal w when
+    the subtree has >1 leaf).
+    """
+    leaves = state.leaves
+    n = len(leaves)
+    M = np.full((n, n), np.inf)
+    if n == 1:
+        M[0, 0] = 0.0
+        return M
+    pos = {leaf: i for i, leaf in enumerate(leaves)}
+    for (u, w), value in state.cost.items():
+        i, j = pos[u], pos[w]
+        M[i, j] = value
+        M[j, i] = value
+    return M
 
 
 ## simulated annealing in python
