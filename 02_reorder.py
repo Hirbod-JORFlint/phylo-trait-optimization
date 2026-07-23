@@ -313,7 +313,7 @@ sa_result_tree, sa_cost, sa_iters = anneal_tree(
     traits_scaled,
     max_iter=200000,
     temperature=10.0,
-    cooling=0.099995,
+    cooling=0.99995,
     patience=10000,
 )
 sa_time = time.time() - sa_start
@@ -330,9 +330,5 @@ print("\n" + "=" * 55)
 print("BENCHMARK SUMMARY:")
 print(f"• Exact Global Optimum (OLO Cost): {olo_cost:.4f}")
 print(f"• Heuristic Estimate  (SA Cost):  {sa_cost:.4f}")
-if gap > 0:
-  print(f"• Simulated Annealing was {gap:.2f}% worse than exact OLO.")
-else:
-  print("• Simulated Annealing matched the exact global OLO solution.")
 print(f"• Speedup: OLO was {sa_time / olo_time:.1f}x faster than SA.")
 print("=" * 55)
