@@ -356,4 +356,10 @@ lines(accel_opt, col = "cadetblue", lwd = 1.5)
 legend("topright", legend = c("Original (High Inertia)", "Optimized (Smooth Trajectory)"), 
        col = c("salmon", "cadetblue"), lty = 1, lwd = 2)
 ```
+```{r}
+accel_opt_new  <- compute_path_acceleration(absolute_best_tree, PC_matrix)
+plot(accel_opt_new, type = "l", col = "salmon", log = "y", lwd = 1.5,
+     xlab = "Leaf Chain Index Step (2 to N-1)", ylab = "Acceleration Magnitude (Log Scale)",
+     main = "Path Kinetic Instability Profile")
+```
 
