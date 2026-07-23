@@ -19,21 +19,25 @@ tip_labels = [f"Tip{i}" for i in range(1, n_tips + 1)]
 
 # Helper function to generate a random binary tree topology
 def make_random_clade(labels):
+    labels = list(labels)
+
     if len(labels) == 1:
-        return Clade(name=labels[0], branch_length=random.uniform(0.1, 1.0))
+        return Clade(
+            name=labels[0],
+            branch_length=random.uniform(0.1, 1.0)
+        )
 
-    # Split labels randomly into two groups
-    split = random.randint(1, len(labels) - 1)
-    left_labels = labels[:split]
-    right_labels = labels[split:]
+    random.shuffle(labels)
 
-    left_child = make_random_clade(left_labels)
-    right_child = make_random_clade(right_labels)
+    split = random.randint(1, len(labels)-1)
+
+    left = make_random_clade(labels[:split])
+    right = make_random_clade(labels[split:])
 
     return Clade(
-        clades=[left_child, right_child], branch_length=random.uniform(0.1, 1.0)
+        clades=[left, right],
+        branch_length=random.uniform(0.1, 1.0)
     )
-
 
 # Build Biopython Tree
 root_clade = make_random_clade(tip_labels)
