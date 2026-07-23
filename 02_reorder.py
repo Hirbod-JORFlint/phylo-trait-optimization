@@ -135,37 +135,6 @@ def trait_cost(tree, traits_df):
   return float(np.sum(np.linalg.norm(diffs, axis=1)))
 
 
-def tree_to_linkage(tree, tip_labels):
-  """Converts a Bio.Phylo Tree into a strictly monotonic SciPy linkage matrix Z (N-1, 4)."""
-  label_to_id = {name: i for i, name in enumerate(tip_labels)}
-  Z_rows = []
-
-  def _traverse(clade):
-    if clade.is_terminal():
-      return label_to_id[clade.name], 1
-
-    children_info = [_traverse(c) for c in clade.clades]
-
-    curr = children_info
-    while len(curr) > 1:
-      c1_id, c1_count = curr.pop(0)
-      c2_id, c2_count = curr.pop(0)
-
-      new_count = c1_count + c2_count
-
-      # FIXED: Height MUST increase strictly with row index in Z
-      new_h = float(len(Z_rows) + 1)
-      next_id = len(tip_labels) + len(Z_rows)
-
-      Z_rows.append([c1_id, c2_id, new_h, new_count])
-      curr.insert(0, (next_id, new_count))
-
-    return curr[0]
-
-  _traverse(tree.root)
-  return np.array(Z_rows, dtype=float)
-
-
 def reorder_tree_clades(tree, optimal_tip_order):
   """Recursively rotates internal clades in-place to match optimal linear leaf ordering."""
   pos_map = {name: i for i, name in enumerate(optimal_tip_order)}
@@ -187,35 +156,246 @@ def reorder_tree_clades(tree, optimal_tip_order):
 # 3. Solve Optimal Leaf Ordering
 # ---------------------------------------------------------
 
-def olo_tree(tree, traits_df):
-  """Solves Optimal Leaf Ordering (OLO) globally using SciPy's Dynamic Programming.
+## Bar_joseph dynamic programming
+def bar_joseph_olo(tree, traits_df):
 
-  Returns: (optimized_tree, final_cost, elapsed_time_sec)
-  """
-  start_time = time.time()
+    start = time.time()
 
-  # Extract current tip order
-  tip_labels = [t.name for t in tree.get_terminals()]
+    leaves = [x.name for x in tree.get_terminals()]
+    leaf_id = {x:i for i,x in enumerate(leaves)}
 
-  # 1. Convert Bio.Phylo tree to SciPy linkage matrix
-  Z = tree_to_linkage(tree, tip_labels)
+    X = traits_df.loc[leaves].values
 
-  # 2. Extract traits matrix corresponding to initial tip order
-  X = traits_df.loc[tip_labels].values
+    D = np.linalg.norm(
+        X[:,None,:] - X[None,:,:],
+        axis=2
+    )
 
-  # 3. Solve OLO via Dynamic Programming (Fast Exact O(N^3) solver)
-  Z_opt = optimal_leaf_ordering(Z, X, metric="euclidean")
 
-  # 4. Extract optimal leaf index sequence and reorder tree clades
-  optimal_indices = leaves_list(Z_opt)
-  optimal_tip_order = [tip_labels[i] for i in optimal_indices]
-  reorder_tree_clades(tree, optimal_tip_order)
+    class NodeDP:
+        def __init__(self):
+            self.leaves = []
+            self.cost = {}
+            self.choice = {}
 
-  # 5. Evaluate final cost and execution time
-  final_cost = trait_cost(tree, traits_df)
-  elapsed_time = time.time() - start_time
 
-  return tree, final_cost, elapsed_time
+    def solve(clade):
+
+        node = NodeDP()
+
+
+        # --------------------------
+        # Terminal node
+        # --------------------------
+        if clade.is_terminal():
+
+            i = leaf_id[clade.name]
+
+            node.leaves = [i]
+            node.cost[(i,i)] = 0
+
+            return node
+
+
+
+        A = solve(clade.clades[0])
+        B = solve(clade.clades[1])
+
+        node.leaves = A.leaves + B.leaves
+
+
+
+        # --------------------------
+        # Orientation function
+        # --------------------------
+        def merge(left,right,orientation):
+
+            cost = {}
+            choice = {}
+
+
+            for i in left.leaves:
+                for j in right.leaves:
+
+                    best = np.inf
+                    bx = None
+                    by = None
+
+
+                    for x in left.leaves:
+
+                        if (i,x) not in left.cost:
+                            continue
+
+                        for y in right.leaves:
+
+                            if (y,j) not in right.cost:
+                                continue
+
+                            value = (
+                                left.cost[(i,x)]
+                                +
+                                D[x,y]
+                                +
+                                right.cost[(y,j)]
+                            )
+
+
+                            if value < best:
+                                best=value
+                                bx=x
+                                by=y
+
+
+                    cost[(i,j)] = best
+                    choice[(i,j)] = (
+                        orientation,
+                        bx,
+                        by
+                    )
+
+            return cost, choice
+
+
+
+        # left -> right
+        LR_cost, LR_choice = merge(
+            A,B,"LR"
+        )
+
+
+        # right -> left
+        RL_cost, RL_choice = merge(
+            B,A,"RL"
+        )
+
+
+        # --------------------------
+        # Select better orientation
+        # --------------------------
+
+        for i,j in LR_cost:
+
+            if LR_cost[(i,j)] <= RL_cost.get((j,i),np.inf):
+
+                node.cost[(i,j)] = LR_cost[(i,j)]
+
+                node.choice[(i,j)] = LR_choice[(i,j)]
+
+            else:
+
+                node.cost[(j,i)] = RL_cost[(j,i)]
+
+                node.choice[(j,i)] = RL_choice[(j,i)]
+
+
+        return node
+
+
+
+    root_dp = solve(tree.root)
+
+
+    # global optimum
+
+    best = np.inf
+    best_pair=None
+
+    for pair,value in root_dp.cost.items():
+
+        if value < best:
+            best=value
+            best_pair=pair
+
+
+
+    # --------------------------
+    # Recover ordering
+    # --------------------------
+
+    def recover(clade, start_leaf, end_leaf):
+
+        if clade.is_terminal():
+            return [clade.name]
+
+
+        A,B = clade.clades
+
+
+        # Try both possible child orientations
+
+        order1 = recover(
+            A,
+            start_leaf,
+            end_leaf
+        ) + recover(
+            B,
+            start_leaf,
+            end_leaf
+        )
+
+
+        order2 = recover(
+            B,
+            start_leaf,
+            end_leaf
+        ) + recover(
+            A,
+            start_leaf,
+            end_leaf
+        )
+
+
+        c1 = trait_cost_from_order(
+            order1,
+            traits_df
+        )
+
+        c2 = trait_cost_from_order(
+            order2,
+            traits_df
+        )
+
+
+        if c1 <= c2:
+            clade.clades=[A,B]
+            return order1
+
+        else:
+            clade.clades=[B,A]
+            return order2
+
+
+
+    def trait_cost_from_order(order,traits):
+
+        Z = traits.loc[order].values
+
+        return np.sum(
+            np.linalg.norm(
+                np.diff(Z,axis=0),
+                axis=1
+            )
+        )
+
+
+    order = recover(
+        tree.root,
+        best_pair[0],
+        best_pair[1]
+    )
+
+
+    reorder_tree_clades(
+        tree,
+        order
+    )
+
+
+    elapsed=time.time()-start
+
+
+    return tree,best,elapsed
 
 
 ## simulated annealing in python
@@ -293,12 +473,17 @@ print("=" * 55)
 print(f"INITIAL UNOPTIMIZED COST: {init_cost:.4f}")
 print("=" * 55)
 
-# ---------------------------------------------------------
-# Method 1: Dynamic Programming OLO
-# ---------------------------------------------------------
-olo_result_tree, olo_cost, olo_time = olo_tree(tree_for_olo, traits_scaled)
 
-print("\n--- [Method 1: Dynamic Programming (OLO)] ---")
+# ---------------------------------------------------------
+# Method 1: Bar-Joseph Dynamic Programming OLO
+# ---------------------------------------------------------
+
+olo_result_tree, olo_cost, olo_time = bar_joseph_olo(
+    tree_for_olo,
+    traits_scaled
+)
+
+print("\n--- [Method 1: Bar-Joseph Dynamic Programming OLO] ---")
 print(f"Final Cost:     {olo_cost:.4f}")
 print(f"Cost Reduction: {(1 - olo_cost / init_cost) * 100:.2f}%")
 print(f"Execution Time: {olo_time:.3f} seconds")
