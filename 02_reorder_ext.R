@@ -34,7 +34,7 @@ torch <- import("torch")
 
 cat("Loading Hugging Face model for tree optimization...\n")
 
-model_id  <- "Qwen/Qwen2.5-Coder-1.5B-Instruct" # Fast, lightweight instruction model
+model_id  <- "Qwen/Qwen2.5-Coder-0.5B-Instruct"# Fast, lightweight instruction model
 tokenizer <- transformers$AutoTokenizer$from_pretrained(model_id)
 
 # float16 generally requires a GPU; fall back to float32 on CPU-only machines
