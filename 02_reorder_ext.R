@@ -76,8 +76,8 @@ query_llm_optimizer <- function(system_prompt, user_prompt) {
   
   outputs <- model$generate(
     inputs$input_ids,
-    max_new_tokens = as.integer(60),
-    temperature    = 0.2,
+    max_new_tokens = as.integer(120), # Increased token space for chain-of-thought reasoning
+    temperature    = 0.3,
     do_sample      = TRUE,
     pad_token_id   = tokenizer$pad_token_id
   )
@@ -219,6 +219,7 @@ apply_llm_strategy <- function(tree, traits, strategy_choice, bottlenecks, tabu_
   } else {
     # STRATEGY 4: Stochastic Exploration
     rand_nodes <- all_internal[!all_internal %in% tabu_list]
+    if (length(rand_nodes) == 0) rand_nodes <- all_internal
     nodes_to_rotate <- sample(rand_nodes, 1)
   }
   
