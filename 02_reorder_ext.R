@@ -1,55 +1,92 @@
 library(ape)
 library(reticulate)
 
-# Set seed for reproducibility
 set.seed(42)
 
 # -----------------------------------------------------------------------------
 # 1. Setup Python & Hugging Face Model via reticulate
 # -----------------------------------------------------------------------------
-# Ensure python environment has transformers, torch, and accelerate
-# py_install(c("transformers", "torch", "accelerate"))
+
+# IMPORTANT: reticulate::py_install() installs into whatever Python
+# environment reticulate is currently configured to use. If you get
+# "ModuleNotFoundError: No module named 'transformers'" even after
+# installing it manually, it almost always means reticulate is pointed at
+# a *different* Python than the one you installed into. Check with:
+#   reticulate::py_config()
+#
+# Pin reticulate to the existing project venv BEFORE anything else runs.
+# Use the venv's python.exe directly (most reliable on Windows) - note the
+# path below is the venv root, not the \Scripts subfolder.
+reticulate::use_python(
+  "E:/Dars/Phylogeny Comparative methods/Tree reordering/.venv/Scripts/python.exe",
+  required = TRUE
+)
+
+required_pkgs <- c("transformers", "torch", "accelerate")
+missing_pkgs  <- required_pkgs[!vapply(required_pkgs, py_module_available, logical(1))]
+if (length(missing_pkgs) > 0) {
+  message("Installing missing Python packages: ", paste(missing_pkgs, collapse = ", "))
+  py_install(missing_pkgs, pip = TRUE)
+}
 
 transformers <- import("transformers")
 torch <- import("torch")
 
 cat("Loading Hugging Face model for tree optimization...\n")
-model_id <- "Qwen/Qwen2.5-Coder-1.5B-Instruct" # Fast, lightweight instruction model
 
+model_id  <- "Qwen/Qwen2.5-Coder-1.5B-Instruct" # Fast, lightweight instruction model
 tokenizer <- transformers$AutoTokenizer$from_pretrained(model_id)
+
+# float16 generally requires a GPU; fall back to float32 on CPU-only machines
+use_cuda <- torch$cuda$is_available()
+dtype    <- if (use_cuda) torch$float16 else torch$float32
+
 model <- transformers$AutoModelForCausalLM$from_pretrained(
   model_id,
-  torch_dtype = torch$float16,
-  device_map = "auto"
+  torch_dtype = dtype,
+  device_map  = "auto"
 )
+
+# Qwen models don't define a pad token by default; set one so generate()
+# doesn't warn or error on batches
+if (is.null(tokenizer$pad_token)) {
+  tokenizer$pad_token <- tokenizer$eos_token
+}
+
+# Do the "keep only the newly generated tokens" step in native Python.
+# Slicing a torch tensor with R's `[` mixes up 1-based vs 0-based indexing
+# and doesn't build a real Python slice object, so it's done here instead.
+py_run_string("
+def extract_new_tokens(outputs, input_ids):
+    return outputs[0, input_ids.shape[1]:]
+")
 
 # Function to query LLM for strategic decision
 query_llm_optimizer <- function(system_prompt, user_prompt) {
   messages <- list(
     list("role" = "system", "content" = system_prompt),
-    list("role" = "user", "content" = user_prompt)
+    list("role" = "user",   "content" = user_prompt)
   )
-  
   prompt_text <- tokenizer$apply_chat_template(
-    messages, 
-    tokenize = FALSE, 
+    messages,
+    tokenize = FALSE,
     add_generation_prompt = TRUE
   )
-  
   inputs <- tokenizer(prompt_text, return_tensors = "pt")$to(model$device)
   
   outputs <- model$generate(
     inputs$input_ids,
     max_new_tokens = as.integer(60),
-    temperature = 0.2,
-    do_sample = TRUE
+    temperature    = 0.2,
+    do_sample      = TRUE,
+    pad_token_id   = tokenizer$pad_token_id
   )
   
-  # Extract generated answer
-  gen_tokens <- outputs[0, (inputs$input_ids$shape[1]:outputs$shape[2])]
-  response <- tokenizer$decode(gen_tokens, skip_special_tokens = TRUE)
-  return(trimws(response))
+  gen_tokens <- py$extract_new_tokens(outputs, inputs$input_ids)
+  response   <- tokenizer$decode(gen_tokens, skip_special_tokens = TRUE)
+  trimws(response)
 }
+
 
 # -----------------------------------------------------------------------------
 # 2. Synthetic Tree & Trait Data Setup
