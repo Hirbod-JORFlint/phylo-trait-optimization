@@ -1054,12 +1054,12 @@ reorder_tree_ompr <- function(phy,
                               solver = "glpk",
                               time_limit = 60,
                               verbose = TRUE) {
-  if (!is.matrix(d)) d <- as.matrix(d)
+  dist_mat <- if (is.matrix(d)) d else as.matrix(d)
 
   n_tip <- length(phy$tip.label)
-  stopifnot(nrow(d) == n_tip, ncol(d) == n_tip)
+  stopifnot(nrow(dist_mat) == n_tip, ncol(dist_mat) == n_tip)
 
-  rownames(d) <- colnames(d) <- as.character(seq_len(n_tip))
+  rownames(dist_mat) <- colnames(dist_mat) <- as.character(seq_len(n_tip))
 
   children <- get_children_list(phy)
   desc_tips <- get_descendant_tips(phy)
@@ -1090,7 +1090,7 @@ reorder_tree_ompr <- function(phy,
                  type = "binary", i != j) %>%
     add_variable(rot[k], k = 1:n_internal, type = "binary") %>%
     set_objective(
-      sum_expr(d[i, j] * adj[i, j, p],
+      sum_expr(colwise(dist_mat[cbind(i, j)]) * adj[i, j, p],
                i = 1:n_tip, j = 1:n_tip, p = 1:(n_tip - 1L), i != j),
       "min"
     ) %>%
@@ -1175,5 +1175,7 @@ cat("MILP tip order:\n"); print(ompr_out$order)
 plot(ompr_out$tree, main = "Tree with ompr MILP-optimized tip order")
 
 ```
+
+
 
 
