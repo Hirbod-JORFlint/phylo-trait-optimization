@@ -100,10 +100,8 @@ traits <- matrix(
 )
 
 # -----------------------------------------------------------------------------
-# 3. Helper Functions & Tree Sanitization
+# 3. Helper Functions & Sanitization
 # -----------------------------------------------------------------------------
-
-# Prevents ape C-level matrix type coercion errors during repeated rotations
 sanitize_tree <- function(tree) {
   ape::read.tree(text = ape::write.tree(tree))
 }
@@ -120,13 +118,11 @@ trait_cost <- function(tree, traits) {
   sum(sqrt(rowSums((X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])^2)))
 }
 
-# Pre-calculate clade sizes without calling heavy ape::extract.clade
 get_clade_sizes <- function(tree) {
   Ntip <- length(tree$tip.label)
   Nnode <- tree$Nnode
   sizes <- integer(Ntip + Nnode)
   sizes[1:Ntip] <- 1L
-  
   pp <- ape::prop.part(tree)
   for (i in seq_along(pp)) {
     sizes[Ntip + i] <- length(pp[[i]])
@@ -134,10 +130,8 @@ get_clade_sizes <- function(tree) {
   return(sizes)
 }
 
-# -----------------------------------------------------------------------------
-# 4. Fast Native R Greedy Hill-Climber (Milliseconds)
-# -----------------------------------------------------------------------------
-greedy_local_descent <- function(tree, traits, max_passes = 3) {
+# Fast Local Hill Climber
+greedy_local_descent <- function(tree, traits, max_passes = 5) {
   current <- sanitize_tree(tree)
   current_cost <- trait_cost(current, traits)
   
@@ -151,12 +145,11 @@ greedy_local_descent <- function(tree, traits, max_passes = 3) {
     improved <- FALSE
     pass <- pass + 1
     
-    # Evaluate all internal nodes sequentially
     for (nd in nodes) {
       cand <- ape::rotate(current, node = as.integer(nd))
       cand_cost <- trait_cost(cand, traits)
       
-      if (cand_cost < current_cost - 1e-5) {
+      if (cand_cost < current_cost - 1e-4) {
         current <- cand
         current_cost <- cand_cost
         improved <- TRUE
@@ -168,9 +161,6 @@ greedy_local_descent <- function(tree, traits, max_passes = 3) {
   return(list(tree = current, cost = current_cost))
 }
 
-# -----------------------------------------------------------------------------
-# 5. Find Trait Bottlenecks for LLM Context
-# -----------------------------------------------------------------------------
 find_tree_bottlenecks <- function(tree, traits, top_k = 6) {
   ord <- get_plot_order(tree)
   X <- traits[ord, , drop = FALSE]
@@ -188,8 +178,6 @@ find_tree_bottlenecks <- function(tree, traits, top_k = 6) {
     mrca_node <- as.integer(mrca_matrix[tip1, tip2])
     
     bottlenecks[[i]] <- list(
-      tip1 = tip1,
-      tip2 = tip2,
       dist = round(dists[idx], 3),
       mrca_node = mrca_node,
       clade_size = clade_sizes[mrca_node]
@@ -199,100 +187,120 @@ find_tree_bottlenecks <- function(tree, traits, top_k = 6) {
 }
 
 # -----------------------------------------------------------------------------
-#  6. LLM Meta-Optimizer Loop (Local Descent + Strategic Basin Hopping)
+# 4. Strategy Execution Engine (R handles the physics)
 # -----------------------------------------------------------------------------
-llm_basin_hopping_optimizer <- function(tree, traits, macro_iterations = 15, tabu_size = 5) {
-  # Step 0: Immediate initial local descent
-  cat("--- Running Initial Local Hill-Climbing Descent ---\n")
-  init_descent <- greedy_local_descent(tree, traits)
-  current <- init_descent$tree
-  current_cost <- init_descent$cost
+apply_llm_strategy <- function(tree, traits, strategy_choice, bottlenecks, tabu_list) {
+  Ntip <- length(tree$tip.label)
+  clade_sizes <- get_clade_sizes(tree)
+  all_internal <- (Ntip + 1):(Ntip + tree$Nnode)
+  
+  # Remove tabu nodes from candidate pools
+  valid_bottlenecks <- sapply(bottlenecks, function(b) b$mrca_node)
+  valid_bottlenecks <- valid_bottlenecks[!valid_bottlenecks %in% tabu_list]
+  if (length(valid_bottlenecks) == 0) valid_bottlenecks <- sapply(bottlenecks, function(b) b$mrca_node)
+  
+  nodes_to_rotate <- integer(0)
+  
+  if (strategy_choice == 1) {
+    # STRATEGY 1: Single Worst Bottleneck
+    nodes_to_rotate <- valid_bottlenecks[1]
+    
+  } else if (strategy_choice == 2) {
+    # STRATEGY 2: Deep Ancestral Node (Clade > 20 tips)
+    deep_nodes <- all_internal[clade_sizes[all_internal] >= 20]
+    deep_nodes <- deep_nodes[!deep_nodes %in% tabu_list]
+    if (length(deep_nodes) == 0) deep_nodes <- all_internal
+    nodes_to_rotate <- sample(deep_nodes, 1)
+    
+  } else if (strategy_choice == 3) {
+    # STRATEGY 3: Multi-Node Macro Shakeup (Top 2-3 Bottlenecks)
+    nodes_to_rotate <- head(valid_bottlenecks, 3)
+    
+  } else {
+    # STRATEGY 4: Stochastic Exploration
+    rand_nodes <- all_internal[!all_internal %in% tabu_list]
+    nodes_to_rotate <- sample(rand_nodes, 1)
+  }
+  
+  # Perform rotation
+  mod_tree <- tree
+  for (nd in nodes_to_rotate) {
+    mod_tree <- ape::rotate(mod_tree, node = as.integer(nd))
+  }
+  mod_tree <- sanitize_tree(mod_tree)
+  
+  return(list(tree = mod_tree, rotated_nodes = nodes_to_rotate))
+}
+
+# -----------------------------------------------------------------------------
+# 5. Strategy-Driven LLM Optimizer
+# -----------------------------------------------------------------------------
+llm_strategy_optimizer <- function(tree, traits, macro_iterations = 20, tabu_size = 8) {
+  cat("--- Step 1: Initial Local Hill-Climbing ---\n")
+  init_run <- greedy_local_descent(tree, traits)
+  current <- init_run$tree
+  current_cost <- init_run$cost
   
   best <- current
   best_cost <- current_cost
-  
   tabu_list <- integer(0)
   
-  cat(sprintf("Initial Raw Cost: %.4f | Post-Local Descent Cost: %.4f\n\n", 
+  cat(sprintf("Initial Raw Cost: %.4f | Post-Greedy Descent: %.4f\n\n", 
               trait_cost(tree, traits), current_cost))
   
-  system_prompt <- "You are an expert meta-heuristic optimization agent for phylogenetic optimal leaf ordering.
-The search is currently trapped in a local minimum.
-Your job is to select TWO distinct MRCA node IDs from the bottleneck list to rotate SIMULTANEOUSLY as a macro-perturbation step to jump out of the local minimum.
-Prefer nodes with large clade sizes or non-tabu nodes.
-Respond ONLY with JSON: {\"primary_node\": <int>, \"secondary_node\": <int>, \"reasoning\": \"<short>\"}"
+  system_prompt <- "You are a meta-heuristic search controller. Choose the next strategy to jump out of local minima:
+1 = Target Worst Trait Bottleneck
+2 = Deep Ancestral Node Perturbation (Flip major clade)
+3 = Multi-Node Macro Shakeup (Flip top 3 bottlenecks)
+4 = Random Stochastic Walk
+
+Respond ONLY with the strategy number (1, 2, 3, or 4)."
   
   for (step in 1:macro_iterations) {
-    # 1. Identify bottlenecks
     bottlenecks <- find_tree_bottlenecks(current, traits, top_k = 6)
-    cand_nodes <- unique(sapply(bottlenecks, function(x) x$mrca_node))
-    
-    # 2. Format context for LLM
-    bottleneck_text <- paste(sapply(bottlenecks, function(b) {
-      status <- if (b$mrca_node %in% tabu_list) " [TABU]" else ""
-      sprintf("- MRCA Node %d: Trait Jump = %.3f | Clade Size = %d tips%s", 
-              b$mrca_node, b$dist, b$clade_size, status)
-    }), collapse = "\n")
     
     user_prompt <- sprintf(
-      "Current Local Min Cost: %.4f\nRecently Perturbed Nodes (Tabu): [%s]\n\nBottleneck Candidates:\n%s\n\nSelect TWO node IDs to rotate together to jump out of this basin.",
-      current_cost, paste(tabu_list, collapse = ", "), bottleneck_text
+      "Current Cost: %.4f | Stagnation Step: %d\nTop Bottleneck MRCA Nodes: [%s]\nTabu List: [%s]\n\nSelect Strategy (1-4):",
+      current_cost, step, 
+      paste(sapply(bottlenecks, function(b) b$mrca_node), collapse=", "),
+      paste(tabu_list, collapse=", ")
     )
     
-    # 3. Query LLM Policy
-    llm_raw_response <- query_llm_optimizer(system_prompt, user_prompt)
+    # Query LLM
+    llm_raw <- query_llm_optimizer(system_prompt, user_prompt)
     
-    # Extract numbers
-    parsed_nodes <- as.integer(regmatches(llm_raw_response, gregexpr("[0-9]+", llm_raw_response))[[1]])
-    parsed_nodes <- parsed_nodes[parsed_nodes %in% cand_nodes]
+    # Parse choice 1-4 with regex
+    strat_choice <- as.numeric(regmatches(llm_raw, regexpr("[1-4]", llm_raw)))
+    if (length(strat_choice) == 0) strat_choice <- sample(1:4, 1) # Fallback if parsing fails
     
-    # Fallback if parsing fails
-    if (length(parsed_nodes) < 2) {
-      valid_nodes <- cand_nodes[!cand_nodes %in% tabu_list]
-      if (length(valid_nodes) < 2) valid_nodes <- cand_nodes
-      parsed_nodes <- sample(valid_nodes, min(2, length(valid_nodes)))
-    }
+    # Execute Strategy
+    strat_res <- apply_llm_strategy(current, traits, strat_choice, bottlenecks, tabu_list)
     
-    n1 <- parsed_nodes[1]
-    n2 <- parsed_nodes[2]
+    # Fast Local Descent on Perturbed State
+    post_descent <- greedy_local_descent(strat_res$tree, traits)
+    cand_cost <- post_descent$cost
     
-    # 4. Apply LLM Macro-Perturbation
-    perturbed_tree <- current
-    perturbed_tree <- ape::rotate(perturbed_tree, node = n1)
-    if (!is.na(n2) && n2 != n1) {
-      perturbed_tree <- ape::rotate(perturbed_tree, node = n2)
-    }
-    perturbed_tree <- sanitize_tree(perturbed_tree)
+    # Update Tabu
+    tabu_list <- unique(c(strat_res$rotated_nodes, tabu_list))[1:min(tabu_size, length(tabu_list))]
     
-    # 5. Run Fast Local Hill-Climbing on the Perturbed Basin
-    post_descent <- greedy_local_descent(perturbed_tree, traits)
-    candidate_tree <- post_descent$tree
-    candidate_cost <- post_descent$cost
-    
-    # 6. Update Tabu & Accept/Reject Logic
-    tabu_list <- unique(c(n1, n2, tabu_list))[1:min(tabu_size, length(tabu_list))]
-    
-    if (candidate_cost < current_cost - 1e-4) {
-      current <- candidate_tree
-      current_cost <- candidate_cost
+    if (cand_cost < current_cost - 1e-4) {
+      current <- post_descent$tree
+      current_cost <- cand_cost
       
       if (current_cost < best_cost) {
         best <- current
-        best_cost <- current_cost
+        best_cost <- cand_cost
       }
-      cat(sprintf("Macro Step %02d | LLM Perturbed Nodes [%d, %d] -> NEW BEST COST: %.4f\n", 
-                  step, n1, n2, current_cost))
+      cat(sprintf("Macro %02d | Strategy %d | Rotated [%s] -> NEW BEST COST: %.4f\n", 
+                  step, strat_choice, paste(strat_res$rotated_nodes, collapse=","), current_cost))
     } else {
-      # Probabilistic acceptance of basin jump
-      delta <- candidate_cost - current_cost
-      if (runif(1) < exp(-delta / 5.0)) {
-        current <- candidate_tree
-        current_cost <- candidate_cost
-        cat(sprintf("Macro Step %02d | LLM Perturbed Nodes [%d, %d] -> Accepted Basin Jump (Cost: %.4f)\n", 
-                    step, n1, n2, current_cost))
+      # Probabilistic Basin Jump Acceptance
+      if (runif(1) < 0.20) {
+        current <- post_descent$tree
+        current_cost <- cand_cost
+        cat(sprintf("Macro %02d | Strategy %d | Accepted Basin Jump (Cost: %.4f)\n", step, strat_choice, cand_cost))
       } else {
-        cat(sprintf("Macro Step %02d | LLM Perturbed Nodes [%d, %d] -> Rejected (Cost: %.4f vs Current: %.4f)\n", 
-                    step, n1, n2, candidate_cost, current_cost))
+        cat(sprintf("Macro %02d | Strategy %d | Rejected Move (Cost: %.4f vs Current: %.4f)\n", step, strat_choice, cand_cost, current_cost))
       }
     }
   }
@@ -301,11 +309,11 @@ Respond ONLY with JSON: {\"primary_node\": <int>, \"secondary_node\": <int>, \"r
 }
 
 # -----------------------------------------------------------------------------
-# 7. Run Execution Benchmark
+# 6. Run Benchmark
 # -----------------------------------------------------------------------------
-res_llm <- llm_basin_hopping_optimizer(my_tree, traits, macro_iterations = 15, tabu_size = 6)
+res_llm <- llm_strategy_optimizer(my_tree, traits, macro_iterations = 20)
 
 cat("\n======================================\n")
-cat("Original Tree Cost   :", trait_cost(my_tree, traits), "\n")
-cat("LLM Hybrid Opt Cost  :", res_llm$cost, "\n")
+cat("Original Cost    :", trait_cost(my_tree, traits), "\n")
+cat("Optimized Cost   :", res_llm$cost, "\n")
 cat("======================================\n")
