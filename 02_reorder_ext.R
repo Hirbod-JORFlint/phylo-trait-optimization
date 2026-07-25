@@ -145,70 +145,123 @@ find_tree_bottlenecks <- function(tree, traits, top_k = 5) {
 }
 
 # -----------------------------------------------------------------------------
-# 4. LLM-Guided Optimization Loop
+# 4. Enhanced Candidate Lookahead & Feature Extraction
 # -----------------------------------------------------------------------------
-llm_optimize_tree <- function(tree, traits, iterations = 50) {
+evaluate_candidate_moves <- function(tree, traits, candidate_nodes, current_cost, tabu_list) {
+  evals <- list()
+  for (i in seq_along(candidate_nodes)) {
+    nd <- candidate_nodes[i]
+    cand_tree <- ape::rotate(tree, node = nd)
+    cand_cost <- trait_cost(cand_tree, traits)
+    delta <- cand_cost - current_cost
+    
+    # Check clade size for context
+    clade_size <- length(ape::extract.clade(tree, node = nd)$tip.label)
+    is_tabu <- nd %in% tabu_list
+    
+    evals[[i]] <- list(
+      node = nd,
+      cost = cand_cost,
+      delta = round(delta, 4),
+      clade_size = clade_size,
+      tabu = is_tabu
+    )
+  }
+  return(evals)
+}
+
+# -----------------------------------------------------------------------------
+# 5. Upgraded LLM Optimizer Loop with Tabu Search & Strategy Selection
+# -----------------------------------------------------------------------------
+llm_optimize_tree_v2 <- function(tree, traits, iterations = 50, tabu_size = 8) {
   current <- tree
   current_cost <- trait_cost(current, traits)
   best <- current
   best_cost <- current_cost
   
-  cat("--- Starting LLM-Guided Optimal Leaf Ordering ---\n")
-  cat("Initial Cost:", current_cost, "\n\n")
+  tabu_list <- integer(0)
+  stagnation_counter <- 0
   
-  system_prompt <- "You are an expert discrete optimization agent for phylogenetic trees.
-Given a list of top bottleneck nodes that cause high trait dissimilarity in leaf ordering, select the single best node ID to rotate.
-Respond ONLY with a valid JSON object: {\"selected_node\": <integer_node_id>, \"reasoning\": \"<short_explanation>\"}"
+  cat("--- Starting High-Efficiency LLM Tabu Optimizer ---\n")
+  cat("Initial Cost:", round(current_cost, 4), "\n\n")
+  
+  system_prompt <- "You are an expert combinatorial optimizer for tree leaf ordering.
+Your task is to analyze candidate node rotations, their cost deltas (negative = improvement), clade sizes, and tabu status.
+Select the best node to rotate, prioritizing negative deltas and non-tabu nodes.
+If all deltas are positive, pick a non-tabu ancestral node with a large clade size to escape the local minimum.
+Respond ONLY with a JSON object: {\"selected_node\": <integer_node_id>, \"reasoning\": \"<short_reason>\"}"
   
   for (step in 1:iterations) {
-    # 1. Extract structural bottlenecks
-    bottlenecks <- find_tree_bottlenecks(current, traits, top_k = 5)
+    # 1. Extract bottleneck nodes (MRCA of worst trait jumps)
+    bottlenecks <- find_tree_bottlenecks(current, traits, top_k = 6)
+    candidate_nodes <- unique(sapply(bottlenecks, function(x) x$mrca_node))
     
-    # 2. Format context for the LLM
-    candidate_nodes <- sapply(bottlenecks, function(x) x$mrca_node)
+    # 2. Compute exact lookahead delta cost for each candidate
+    candidate_evals <- evaluate_candidate_moves(current, traits, candidate_nodes, current_cost, tabu_list)
     
-    prompt_text <- paste0(
-      "Current Total Cost: ", round(current_cost, 2), "\n",
-      "Top 5 Trait Jumps between adjacent leaves:\n",
-      paste(sapply(bottlenecks, function(b) {
-        paste0("- JUMP: ", b$tip1, " <-> ", b$tip2, " (Distance: ", b$dist, ") -> Controlled by MRCA Node: ", b$mrca_node)
-      }), collapse = "\n"), "\n\n",
-      "Which MRCA Node ID from [", paste(candidate_nodes, collapse = ", "), "] should we rotate to smooth out leaf traits?"
+    # 3. Format candidate options for LLM prompt
+    candidates_formatted <- paste(sapply(candidate_evals, function(e) {
+      status <- if (e$tabu) " [TABU - RECENTLY VISITED]" else ""
+      sprintf("- Node %d: Delta = %.4f | Clade Size = %d tips%s", 
+              e$node, e$delta, e$clade_size, status)
+    }), collapse = "\n")
+    
+    user_prompt <- sprintf(
+      "Current Cost: %.4f | Stagnation Level: %d\nRecently Tried Nodes (Tabu): [%s]\nCandidate Moves:\n%s\n\nWhich Node ID should be rotated?",
+      current_cost, stagnation_counter, paste(tabu_list, collapse = ", "), candidates_formatted
     )
     
-    # 3. Query LLM via reticulate
-    llm_raw_response <- query_llm_optimizer(system_prompt, prompt_text)
+    # 4. Query LLM Policy
+    llm_raw_response <- query_llm_optimizer(system_prompt, user_prompt)
     
-    # Parse node ID using regex
+    # Parse selected node ID
     selected_node <- as.numeric(regmatches(llm_raw_response, regexpr("[0-9]+", llm_raw_response)))
     
-    # Fallback if parsing fails or node is invalid
+    # Fallback policy: Pick best non-tabu candidate if parsing fails
+    valid_candidates <- candidate_nodes[!candidate_nodes %in% tabu_list]
+    if (length(valid_candidates) == 0) valid_candidates <- candidate_nodes # Reset tabu if all blocked
+    
     if (length(selected_node) == 0 || !(selected_node %in% candidate_nodes)) {
-      selected_node <- sample(candidate_nodes, 1)
+      # Fallback to greedy non-tabu node
+      deltas <- sapply(candidate_evals, function(e) ifelse(e$tabu, Inf, e$delta))
+      selected_node <- candidate_evals[[which.min(deltas)]]$node
     }
     
-    # 4. Perform targeted rotation
+    # 5. Apply selected rotation
     candidate <- ape::rotate(current, node = selected_node)
     candidate_cost <- trait_cost(candidate, traits)
+    delta <- candidate_cost - current_cost
     
-    # Accept if improved
+    # 6. Update Search State & Tabu Memory
+    tabu_list <- c(selected_node, tabu_list)
+    if (length(tabu_list) > tabu_size) tabu_list <- tabu_list[1:tabu_size]
+    
     if (candidate_cost < current_cost) {
       current <- candidate
       current_cost <- candidate_cost
+      stagnation_counter <- 0
       
       if (current_cost < best_cost) {
         best <- current
         best_cost <- current_cost
       }
-      cat(sprintf("Step %02d | LLM Rotated Node %d | COST IMPROVED: %.3f\n", step, selected_node, current_cost))
+      cat(sprintf("Step %02d | Rotated Node %d | COST IMPROVED: %.4f (Delta: %.4f)\n", 
+                  step, selected_node, current_cost, delta))
     } else {
-      # Probabilistic acceptance (Simulated Annealing step)
-      if (runif(1) < 0.15) {
+      stagnation_counter <- stagnation_counter + 1
+      
+      # Simulated annealing acceptance probability for uphill moves
+      temp <- max(1.0, 10.0 * (0.95^step))
+      accept_prob <- exp(-delta / temp)
+      
+      if (stagnation_counter < 5 && runif(1) < accept_prob) {
         current <- candidate
         current_cost <- candidate_cost
-        cat(sprintf("Step %02d | LLM Rotated Node %d | Accepted Uphill Move: %.3f\n", step, selected_node, current_cost))
+        cat(sprintf("Step %02d | Rotated Node %d | Accepted Uphill Move: %.4f (Delta: +%.4f)\n", 
+                    step, selected_node, current_cost, delta))
       } else {
-        cat(sprintf("Step %02d | LLM Rotated Node %d | Rejected Move (Cost: %.3f)\n", step, selected_node, candidate_cost))
+        cat(sprintf("Step %02d | Rotated Node %d | Rejected (Delta: +%.4f)\n", 
+                    step, selected_node, delta))
       }
     }
   }
@@ -217,11 +270,11 @@ Respond ONLY with a valid JSON object: {\"selected_node\": <integer_node_id>, \"
 }
 
 # -----------------------------------------------------------------------------
-# 5. Run & Compare
+# 3. Run Optimization Benchmark
 # -----------------------------------------------------------------------------
-res_llm <- llm_optimize_tree(my_tree, traits, iterations = 30)
+res_llm <- llm_optimize_tree_v2(my_tree, traits, iterations = 50, tabu_size = 8)
 
 cat("\n======================================\n")
 cat("Original Tree Cost :", trait_cost(my_tree, traits), "\n")
-cat("LLM Optimized Cost :", res_llm$cost, "\n")
+cat("LLM Tabu Opt Cost  :", res_llm$cost, "\n")
 cat("======================================\n")
