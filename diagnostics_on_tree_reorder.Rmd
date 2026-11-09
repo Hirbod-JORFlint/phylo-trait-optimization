@@ -370,6 +370,7 @@ The static panels above are useful, but it is hard to explore the interplay betw
 - a rectangular phylogram on the left with an aligned 6-trait heatmap on the right;
 - hover anywhere: tips, internal nodes, and heatmap cells all show details;
 - **click any internal-node diamond to flip (rotate) its two child clades**, which reorders only the leaves, preserving the topology exactly;
+- a button toggles a second view with three aligned panels: the tree, the **species names**, and the **values of a selected trait**, with one dot per tip and dotted guide lines (a `plot_phylo_composite()`-style layout);
 - an embedded **OLO (Bar-Joseph et al. 2001) optimal leaf ordering**, computed with tree-constrained rotations, plus a *Reset* and an *Apply OLO-optimal order* button;
 - a live **adjacent-trait-distance readout** recomputed after every rotation;
 - the (possibly reordered) tree is returned from R and can optionally be written to a Newick file;
@@ -386,6 +387,8 @@ The static panels above are useful, but it is hard to explore the interplay betw
 #     without changing the topology
 #   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering before plot,
 #     with a button to restore the OLO-optimal order after manual edits
+#   - A button toggles a second view: tree + species names + values of a
+#     selected trait (one aligned panel per element, plot_phylo_composite-style)
 #   - Output: a standalone interactive HTML file (plotly.js htmlwidget)
 # =============================================================================
 
@@ -686,14 +689,14 @@ function edgeTrace(L){
           line:{color:"#8a8a8a", width:1.4}, hoverinfo:"skip", showlegend:false};
 }
 
-function tipTrace(L){
+function tipTrace(L, showLabels){
   var x=[], y=[], txt=[];
   L.order.forEach(function(t){ x.push(L.x[t]); y.push(L.y[t]); txt.push(tips[t-1]); });
   var tr = {type:"scatter", mode:"markers", x:x, y:y, text:txt,
             hovertemplate:"<b>%{text}</b><extra>tip</extra>",
             marker:{size:7, color:"#1f77b4", line:{width:1, color:"#ffffff"}},
             showlegend:false};
-  if(n <= 40){ tr.mode = "markers+text"; tr.textposition = "middle right"; tr.textfont = {size:10}; }
+  if(showLabels !== false && n <= 40){ tr.mode = "markers+text"; tr.textposition = "middle right"; tr.textfont = {size:10}; }
   return tr;
 }
 
@@ -724,15 +727,107 @@ function heatTrace(L){
           showlegend:false};
 }
 
+// ---------------------------------------------------------------------------
+// Second view: tree + species names + selected trait values (composite panels)
+// ---------------------------------------------------------------------------
+var viewMode = "heat";   // "heat" = tree + heatmap, "trait" = tree + names + values
+var traitIdx = 0;
+
+function traitValues(){
+  return traitsHeat.map(function(row){ return row[traitIdx]; });
+}
+
+function traitRange(){
+  var v = traitValues();
+  var lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
+  var pad = (hi - lo) * 0.12;
+  if(!(pad > 0)) pad = 0.1;
+  return [lo - pad, hi + pad];
+}
+
+function labelStride(){
+  // keep the species panel readable for large trees: at most ~45 labels
+  return Math.max(1, Math.ceil(n / 45));
+}
+
+function namesTrace(L){
+  var stride = labelStride();
+  var x = [], y = [], txt = [];
+  L.order.forEach(function(t, i){
+    if(i % stride !== 0) return;
+    x.push(0.02); y.push(L.y[t]);
+    txt.push("<i>" + tips[t-1] + "</i>");
+  });
+  return {type:"scatter", mode:"text", x:x, y:y, text:txt,
+          xaxis:"x2", yaxis:"y",
+          textposition:"middle right",
+          textfont:{size:10, family:"Times New Roman, Georgia, serif"},
+          hovertemplate:"<b>%{text}</b><extra>species</extra>",
+          showlegend:false};
+}
+
+function guideTrace(L, xr){
+  var x = [], y = [];
+  L.order.forEach(function(t){
+    x.push(xr[0], xr[1], null);
+    y.push(L.y[t], L.y[t], null);
+  });
+  return {type:"scatter", mode:"lines", x:x, y:y,
+          xaxis:"x3", yaxis:"y",
+          line:{color:"#d9d9d9", width:0.8, dash:"dot"},
+          hoverinfo:"skip", showlegend:false};
+}
+
+function valueTrace(L){
+  var vals = traitValues();
+  var x = [], y = [], txt = [], cd = [];
+  L.order.forEach(function(t){
+    x.push(vals[t-1]); y.push(L.y[t]);
+    txt.push("<i>" + tips[t-1] + "</i>"); cd.push(vals[t-1]);
+  });
+  return {type:"scatter", mode:"markers", x:x, y:y, text:txt, customdata:cd,
+          xaxis:"x3", yaxis:"y",
+          hovertemplate:"<b>%{text}</b><br>" + tNames[traitIdx] + ": %{customdata:.3f}<extra>trait</extra>",
+          marker:{size:8, color:"#228b22", line:{width:1, color:"#ffffff"}},
+          showlegend:false};
+}
+
 var lay = {
   title:{text: ttl},
   xaxis:{domain:[0,0.40], showgrid:false, zeroline:false, showticklabels:false},
   yaxis:{domain:[0.05,0.96], range:[0.5,n+0.5], showgrid:false, zeroline:false, showticklabels:false},
-  xaxis2:{domain:[0.50,0.90], showgrid:false, title:{text:"Trait"}, tickangle:-30, automargin:true},
-  yaxis2:{domain:[0.05,0.96], range:[0.5,n+0.5], showgrid:false, showticklabels:false},
+  xaxis2:{domain:[0.50,0.90], type:"category", autorange:true, showgrid:false, zeroline:false,
+          showticklabels:true, visible:true, title:{text:"Trait"}, tickangle:-30, automargin:true},
+  yaxis2:{domain:[0.05,0.96], range:[0.5,n+0.5], visible:true, showgrid:false, showticklabels:false},
+  xaxis3:{visible:false},
+  annotations:[],
   margin:{l:30,r:20,t:70,b:60},
   showlegend:false, hovermode:"closest"
 };
+
+function traitLayout(){
+  var xr = traitRange();
+  return {
+    title:{text: ttl},
+    xaxis:{domain:[0,0.34], showgrid:false, zeroline:false, showticklabels:false},
+    yaxis:{domain:[0.05,0.96], range:[0.5,n+0.5], showgrid:false, zeroline:false, showticklabels:false},
+    xaxis2:{domain:[0.36,0.60], range:[0,1], type:"linear", showgrid:false, zeroline:false,
+            showticklabels:false, visible:true, title:{text:""}, tickangle:0, automargin:false},
+    xaxis3:{domain:[0.68,0.97], range:xr, type:"linear", visible:true, showgrid:true,
+            gridcolor:"#efefef", zeroline:false, automargin:true},
+    yaxis2:{visible:false},
+    annotations:[
+      {text:"Phylogenetic tree", xref:"paper", yref:"paper", x:0.17, y:1.02,
+       showarrow:false, font:{size:13}},
+      {text:"Species" + (labelStride() > 1 ? " (1 in " + labelStride() + ")" : ""),
+       xref:"paper", yref:"paper", x:0.48, y:1.02, showarrow:false, font:{size:13}},
+      {text:tNames[traitIdx] + " value", xref:"paper", yref:"paper", x:0.825, y:1.02,
+       showarrow:false, font:{size:13}}
+    ],
+    margin:{l:30,r:20,t:90,b:60},
+    showlegend:false, hovermode:"closest"
+  };
+}
 
 var costEl = null;
 function updateCost(L){
@@ -773,7 +868,13 @@ function revForTarget(targetLabels){
 
 function redraw(){
   var L = layoutCalc(rev);
-  Plotly.react(el, [edgeTrace(L), tipTrace(L), intTrace(L), heatTrace(L)], lay);
+  if(viewMode === "trait"){
+    Plotly.react(el, [edgeTrace(L), tipTrace(L, false), intTrace(L),
+                      namesTrace(L), guideTrace(L, traitRange()), valueTrace(L)],
+                 traitLayout());
+  } else {
+    Plotly.react(el, [edgeTrace(L), tipTrace(L), intTrace(L), heatTrace(L)], lay);
+  }
   updateCost(L);
 }
 
@@ -782,7 +883,11 @@ ui.style.cssText = "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sa
 var html = "<b>Adjacent trait distance:</b> <span style=\"color:#1f77b4;font-weight:700\" id=\"olocostLbl\">0</span>";
 html += "<button id=\"oloresetBtn\" style=\"margin-left:16px\">Reset</button>";
 if(oloOrder){ html += " <button id=\"olobestBtn\" title=\"Apply the OLO-optimal tip order\">Apply OLO-optimal order</button>"; }
-html += "&nbsp; <span style=\"color:#777\">Click a <b style=\"color:#e08a1e\">diamond</b> (internal node) to flip its two child clades. Hover tips, internal nodes, or heatmap cells for details.</span>";
+html += " <button id=\"traitViewBtn\" title=\"Toggle the species + trait value panels\">Species + trait panel</button>";
+var opts = "";
+for(var i=0;i<tNames.length;i++){ opts += "<option value=\"" + i + "\">" + tNames[i] + "</option>"; }
+html += " <span id=\"traitSelWrap\" style=\"margin-left:10px;display:none\">trait: <select id=\"traitSel\">" + opts + "</select></span>";
+html += "&nbsp; <span style=\"color:#777\">Click a <b style=\"color:#e08a1e\">diamond</b> (internal node) to flip its two child clades. Hover tips, internal nodes, heatmap cells, or trait dots for details.</span>";
 ui.innerHTML = html;
 el.parentNode.insertBefore(ui, el);
 costEl = document.getElementById("olocostLbl");
@@ -790,6 +895,16 @@ document.getElementById("oloresetBtn").addEventListener("click", function(){ ini
 if(oloOrder){
   document.getElementById("olobestBtn").addEventListener("click", function(){ rev = revForTarget(oloOrder); redraw(); });
 }
+var traitViewBtn = document.getElementById("traitViewBtn");
+var traitSelWrap  = document.getElementById("traitSelWrap");
+var traitSel      = document.getElementById("traitSel");
+traitViewBtn.addEventListener("click", function(){
+  viewMode = (viewMode === "trait") ? "heat" : "trait";
+  traitViewBtn.textContent = (viewMode === "trait") ? "Back to heatmap view" : "Species + trait panel";
+  traitSelWrap.style.display = (viewMode === "trait") ? "inline" : "none";
+  redraw();
+});
+traitSel.addEventListener("change", function(){ traitIdx = +traitSel.value; redraw(); });
 
 el.on("plotly_click", function(data){
   var pts = data.points || [];
