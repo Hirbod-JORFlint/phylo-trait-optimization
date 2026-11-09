@@ -234,7 +234,7 @@ my_tree <- rtree(
     tip.label=paste0("Tip",1:100)
 )
 
-traits <- matrix(
+traits <- matrix(   ## triat simulation package
     runif(100*6,0,5),
     nrow=100,
     dimnames=list(my_tree$tip.label,
@@ -303,6 +303,14 @@ trait_cost <- function(tree, traits) {
             )
         )
     )
+    # sum(
+    #     abs(
+    #         rowSums(
+    #             (X[-1, , drop = FALSE] - X[-nrow(X), , drop = FALSE])
+    #         )
+    #     )
+    # )    
+    
 }
 
 # Random rotation using safe and native ape infrastructure
