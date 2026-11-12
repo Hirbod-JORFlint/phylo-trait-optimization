@@ -12,3 +12,19 @@
 *.synctex.gz
 .venv/
 .idea/
+
+# Local development, test and debug artifacts
+/dev/tmp/
+/dev/debug/
+/dev/archive/
+/dev/outputs/demo/
+
+# Generated development files
+/dev/build/tree_viz_widget.js
+/dev/build/interactive_tree_viz_final.R
+
+# Generated demo outputs (the tracked .html/.tre outputs stay in the repo)
+/interactive_tree_heatmap.csv
+/interactive_tree_heatmap_config.json
+/interactive_tree_heatmap_dark.html
+/tree_viz_exports/
