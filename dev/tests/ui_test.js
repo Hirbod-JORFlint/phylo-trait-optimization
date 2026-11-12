@@ -16,7 +16,9 @@
   function step(name, fn) { steps.push({ name: name, fn: fn }); }
 
   step("initial", function () {
-    out.steps.push({ name: "initial", metas: metas(), paper: full().paper_bgcolor, status: status() });
+    var p = plotEl();
+    out.steps.push({ name: "initial", metas: metas(), paper: full().paper_bgcolor,
+      status: status(), width: p.style.width, height: p.style.height });
   });
   step("dark", function () {
     q("theme").click();
@@ -56,14 +58,18 @@
   });
   step("traitView", function () {
     q("view").click();
+    var p = plotEl();
     out.steps.push({ name: "traitView", metas: metas(),
+      width: p.style.width, height: p.style.height,
       x3: full().xaxis3 && full().xaxis3.domain,
       y2: full().yaxis2 && full().yaxis2.domain,
       y2range: full().yaxis2 && full().yaxis2.range });
   });
   step("heatView", function () {
     q("view").click();
-    out.steps.push({ name: "heatView", metas: metas() });
+    var p = plotEl();
+    out.steps.push({ name: "heatView", metas: metas(),
+      width: p.style.width, height: p.style.height });
   });
   step("presetDark", function () {
     setVal("preset_select", "builtin:dark");

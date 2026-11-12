@@ -33,6 +33,21 @@ into `tree_viz_widget.js`. `build_final_chunk.R` embeds it into
 file into the `interactive-tree-viz-function` chunk of
 `diagnostics_on_tree_reorder.Rmd`.
 
+## Per-view sizing
+
+`tree_viz_config()` supports separate dimensions for the two interactive views:
+
+```r
+tree_viz_config(
+  heatmap_view_width = 1100, heatmap_view_height = 720,
+  trait_view_width = 900, trait_view_height = 620
+)
+```
+
+The heatmap view is the initial view; `trait_view_*` controls the
+Species + trait panel. Blank per-view values inherit the general `width` and
+`height` settings, then the widget's responsive sizing behavior.
+
 ## Run the tests
 
 All tests assume the working directory is the repository root. Generated files
@@ -57,6 +72,10 @@ Rscript dev/tests/test_itv.R
 python dev/tests/make_ui_test.py
 # then open dev/tmp/ui_test2.html in a headless browser
 ```
+
+The generated UI test records the plot's width and height on initial load and
+after switching between the two views, so you can verify each view restores
+its own configured dimensions.
 
 `probe_html.py` injects a DOM probe into any widget HTML:
 

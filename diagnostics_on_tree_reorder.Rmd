@@ -382,7 +382,7 @@ The static panels above are useful, but it is hard to explore the interplay betw
 
 - rectangular, slanted, circular and fan tree layouts, with an aligned trait heatmap or a species/trait-value panel;
 - customizable titles, tip labels, internal-node IDs, node/branch colours and sizes, heatmap colours/range and light/dark themes;
-- responsive fill, fixed dimensions or aspect-ratio sizing;
+- responsive fill, fixed dimensions or aspect-ratio sizing, with separate width/height for the heatmap and species+trait views;
 - filtering by trait range, clade or selected heatmap columns, plus highlighting of matching tips and clades;
 - **click any internal-node diamond to flip (rotate) its two child clades**, which reorders only the leaves, preserving the topology exactly;
 - an embedded **OLO (Bar-Joseph et al. 2001) optimal leaf ordering**, computed with tree-constrained rotations, plus *Reset* and *Apply OLO-optimal order* buttons;
@@ -426,7 +426,7 @@ py_install('plotly')
 #   - Click an internal-node diamond to flip its child clades (topology safe)
 #   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering
 #   - Second view: tree + species names + values of a selected trait
-#   - Appearance, titles, sizing, filtering, highlighting, dark/light mode
+#   - Appearance, titles, per-view sizing, filtering, highlighting, dark/light mode
 #   - Export PNG / SVG / PDF (print), Newick, heatmap CSV and config JSON
 #   - Built-in and user-saved configuration presets
 # =============================================================================
@@ -584,6 +584,10 @@ tree_viz_config <- function(
     width = NULL,
     height = NULL,
     aspect_ratio = NULL,
+    heatmap_view_width = NULL,
+    heatmap_view_height = NULL,
+    trait_view_width = NULL,
+    trait_view_height = NULL,
     tip_filter = NULL,
     clade = NULL,
     heatmap_columns = NULL,
@@ -611,6 +615,10 @@ tree_viz_config <- function(
     trait_panel_title = trait_panel_title,
     responsive = responsive, width = width, height = height,
     aspect_ratio = aspect_ratio,
+    heatmap_view_width = heatmap_view_width,
+    heatmap_view_height = heatmap_view_height,
+    trait_view_width = trait_view_width,
+    trait_view_height = trait_view_height,
     tip_filter = tip_filter, clade = clade,
     heatmap_columns = heatmap_columns, highlight = highlight,
     fan_angle = fan_angle, show_heatmap = show_heatmap
@@ -729,11 +737,17 @@ normalize_tree_viz_config <- function(cfg, traits, tree) {
   } else cfg$highlight <- NULL
 
   cfg$responsive <- lgl1(cfg$responsive, TRUE)
-  w <- suppressWarnings(as.numeric(cfg$width)); h <- suppressWarnings(as.numeric(cfg$height))
-  ar <- suppressWarnings(as.numeric(cfg$aspect_ratio))
-  cfg$width <- if (length(w) == 1L && is.finite(w) && w > 0) w else NULL
-  cfg$height <- if (length(h) == 1L && is.finite(h) && h > 0) h else NULL
-  cfg$aspect_ratio <- if (length(ar) == 1L && is.finite(ar) && ar > 0) ar else NULL
+  pos1 <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) == 1L && is.finite(v) && v > 0) v else NULL
+  }
+  cfg$width <- pos1(cfg$width)
+  cfg$height <- pos1(cfg$height)
+  cfg$aspect_ratio <- pos1(cfg$aspect_ratio)
+  cfg$heatmap_view_width <- pos1(cfg$heatmap_view_width)
+  cfg$heatmap_view_height <- pos1(cfg$heatmap_view_height)
+  cfg$trait_view_width <- pos1(cfg$trait_view_width)
+  cfg$trait_view_height <- pos1(cfg$trait_view_height)
   if (!cfg$responsive && is.null(cfg$width) && is.null(cfg$height)) {
     cfg$width <- 1000; cfg$height <- 700
   }
@@ -1011,6 +1025,10 @@ var DEFAULT_CFG = mergeCfg({
   width: null,
   height: null,
   aspect_ratio: null,
+  heatmap_view_width: null,
+  heatmap_view_height: null,
+  trait_view_width: null,
+  trait_view_height: null,
   tip_filter: null,
   clade: null,
   heatmap_columns: null,
@@ -1501,19 +1519,31 @@ function valueTrace(L) {
     showlegend: false, meta: "value" };
 }
 
+function viewDimsCfg() {
+  var traitView = (state.viewMode === "trait");
+  var vw = numOrNull(traitView ? cfg.trait_view_width : cfg.heatmap_view_width);
+  var vh = numOrNull(traitView ? cfg.trait_view_height : cfg.heatmap_view_height);
+  return {
+    width: (vw !== null) ? vw : numOrNull(cfg.width),
+    height: (vh !== null) ? vh : numOrNull(cfg.height),
+    aspect_ratio: numOrNull(cfg.aspect_ratio)
+  };
+}
+
 function containerDims() {
-  var w = numOrNull(cfg.width);
-  var h = numOrNull(cfg.height);
-  var ar = numOrNull(cfg.aspect_ratio);
+  var d = viewDimsCfg();
+  var w = d.width;
+  var h = d.height;
+  var ar = d.aspect_ratio;
   if (w === null) w = el.clientWidth || 900;
   if (h === null) {
     // Ignore the CSS min-height placeholder when no real height is available.
     h = (el.clientHeight && el.clientHeight > 240) ? el.clientHeight : 600;
   }
   if (ar !== null && ar > 0) {
-    if (numOrNull(cfg.width) !== null && numOrNull(cfg.height) === null) h = w / ar;
-    else if (numOrNull(cfg.height) !== null && numOrNull(cfg.width) === null) w = h * ar;
-    else if (numOrNull(cfg.width) === null && numOrNull(cfg.height) === null) h = w / ar;
+    if (d.width !== null && d.height === null) h = w / ar;
+    else if (d.height !== null && d.width === null) w = h * ar;
+    else if (d.width === null && d.height === null) h = w / ar;
   }
   return { width: Math.max(320, Math.round(w)), height: Math.max(240, Math.round(h)) };
 }
@@ -1618,8 +1648,9 @@ function plotConfig() {
 
 function applyContainerSizing() {
   var dims = containerDims();
-  var arOnly = numOrNull(cfg.aspect_ratio) !== null &&
-    numOrNull(cfg.width) === null && numOrNull(cfg.height) === null;
+  var d = viewDimsCfg();
+  var arOnly = d.aspect_ratio !== null &&
+    d.width === null && d.height === null;
   if (cfg.responsive && arOnly) {
     el.style.width = "100%";
     el.style.height = dims.height + "px";
@@ -1635,10 +1666,11 @@ function applyContainerSizing() {
                          parent.style.height !== "auto");
     var wc = document.getElementById("htmlwidget_container");
     var standalone = !!(wc && wc.parentNode === document.body);
+    var heightIsDerived = d.aspect_ratio !== null && d.width !== null;
     var fill = (standalone || parentSized) && parentH >= 240 &&
-               numOrNull(cfg.height) === null;
+               d.height === null && !heightIsDerived;
     if (wrap) wrap.style.height = fill ? "100%" : "auto";
-    el.style.width = "100%";
+    el.style.width = (d.width !== null) ? (dims.width + "px") : "100%";
     if (fill) {
       el.style.height = "";
       el.style.flex = "1 1 auto";
@@ -1809,6 +1841,10 @@ function syncUI() {
   setVal("width", cfg.width);
   setVal("height", cfg.height);
   setVal("aspect_ratio", cfg.aspect_ratio);
+  setVal("heatmap_view_width", cfg.heatmap_view_width);
+  setVal("heatmap_view_height", cfg.heatmap_view_height);
+  setVal("trait_view_width", cfg.trait_view_width);
+  setVal("trait_view_height", cfg.trait_view_height);
 
   var auto = !(cfg.heatmap_range && cfg.heatmap_range.length === 2);
   setVal("heatmap_auto", auto);
@@ -2141,6 +2177,10 @@ function bindEvents() {
   on("width", "change", function () { cfg.width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("height", "change", function () { cfg.height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("aspect_ratio", "change", function () { cfg.aspect_ratio = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_width", "change", function () { cfg.heatmap_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_height", "change", function () { cfg.heatmap_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_width", "change", function () { cfg.trait_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_height", "change", function () { cfg.trait_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("heatmap_auto", "change", function () {
     if (this.checked) cfg.heatmap_range = null;
     else {
@@ -2299,8 +2339,13 @@ h.push('<label>Species panel title<input type="text" data-role="species_panel_ti
 h.push('<label>Trait panel title<input type="text" data-role="trait_panel_title" placeholder="auto: trait name + value"></label>');
 h.push('<label>Fan angle (deg)<input type="number" min="10" max="360" step="1" data-role="fan_angle"></label>');
 h.push('<label>Show heatmap<input type="checkbox" data-role="show_heatmap"></label>');
-h.push('<label>Width (px)<input type="number" min="320" step="10" data-role="width"></label>');
-h.push('<label>Height (px)<input type="number" min="240" step="10" data-role="height"></label>');
+h.push('<div class="itv-wide itv-subhead">View sizing (blank = default)</div>');
+h.push('<label>Heatmap view width (px)<input type="number" min="320" step="10" data-role="heatmap_view_width"></label>');
+h.push('<label>Heatmap view height (px)<input type="number" min="240" step="10" data-role="heatmap_view_height"></label>');
+h.push('<label>Species + trait view width (px)<input type="number" min="320" step="10" data-role="trait_view_width"></label>');
+h.push('<label>Species + trait view height (px)<input type="number" min="240" step="10" data-role="trait_view_height"></label>');
+h.push('<label>Default width (px)<input type="number" min="320" step="10" data-role="width"></label>');
+h.push('<label>Default height (px)<input type="number" min="240" step="10" data-role="height"></label>');
 h.push('<label>Aspect ratio (w/h)<input type="number" min="0.1" step="0.01" data-role="aspect_ratio"></label>');
 h.push('<label>Responsive fill<input type="checkbox" data-role="responsive"></label>');
 h.push('</div></details>');
@@ -2396,10 +2441,18 @@ el.on("plotly_click", function (data) {
 
   # ----- responsive / fixed / aspect-ratio sizing -----
   # The widget JS sizes the plot div inside a flex column (control panel on
-  # top, plot filling the rest). Standalone pages get a viewport-height
-  # container from the JS; in R Markdown knitr supplies the height.
-  widget$width <- .itv_or(cfg$width, "100%")
-  widget$height <- .itv_or(cfg$height, "100%")
+  # top, plot filling the rest). Each view (heatmap vs species+trait) can have
+  # its own width/height; the initial view is the heatmap view.
+  initial_width  <- .itv_or(cfg$heatmap_view_width, cfg$width)
+  initial_height <- .itv_or(cfg$heatmap_view_height, cfg$height)
+  if (!is.null(cfg$aspect_ratio)) {
+    if (!is.null(initial_width) && is.null(initial_height))
+      initial_height <- initial_width / cfg$aspect_ratio
+    if (is.null(initial_width) && !is.null(initial_height))
+      initial_width <- initial_height * cfg$aspect_ratio
+  }
+  widget$width <- .itv_or(initial_width, "100%")
+  widget$height <- .itv_or(initial_height, "100%")
 
   suppressWarnings(suppressMessages(
     htmlwidgets::saveWidget(widget, output_file, selfcontained = selfcontained)
@@ -2513,6 +2566,7 @@ viz_cfg <- tree_viz_config(
   heatmap_panel_title = "Selected traits",
   responsive         = TRUE,
   height             = 720,
+  trait_view_height  = 620,
   highlight          = list(
     trait = trait1,
     max   = stats::median(traits[, trait1], na.rm = TRUE),

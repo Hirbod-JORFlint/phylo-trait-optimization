@@ -121,6 +121,10 @@ function syncUI() {
   setVal("width", cfg.width);
   setVal("height", cfg.height);
   setVal("aspect_ratio", cfg.aspect_ratio);
+  setVal("heatmap_view_width", cfg.heatmap_view_width);
+  setVal("heatmap_view_height", cfg.heatmap_view_height);
+  setVal("trait_view_width", cfg.trait_view_width);
+  setVal("trait_view_height", cfg.trait_view_height);
 
   var auto = !(cfg.heatmap_range && cfg.heatmap_range.length === 2);
   setVal("heatmap_auto", auto);
@@ -453,6 +457,10 @@ function bindEvents() {
   on("width", "change", function () { cfg.width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("height", "change", function () { cfg.height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("aspect_ratio", "change", function () { cfg.aspect_ratio = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_width", "change", function () { cfg.heatmap_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_height", "change", function () { cfg.heatmap_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_width", "change", function () { cfg.trait_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_height", "change", function () { cfg.trait_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("heatmap_auto", "change", function () {
     if (this.checked) cfg.heatmap_range = null;
     else {
@@ -611,8 +619,13 @@ h.push('<label>Species panel title<input type="text" data-role="species_panel_ti
 h.push('<label>Trait panel title<input type="text" data-role="trait_panel_title" placeholder="auto: trait name + value"></label>');
 h.push('<label>Fan angle (deg)<input type="number" min="10" max="360" step="1" data-role="fan_angle"></label>');
 h.push('<label>Show heatmap<input type="checkbox" data-role="show_heatmap"></label>');
-h.push('<label>Width (px)<input type="number" min="320" step="10" data-role="width"></label>');
-h.push('<label>Height (px)<input type="number" min="240" step="10" data-role="height"></label>');
+h.push('<div class="itv-wide itv-subhead">View sizing (blank = default)</div>');
+h.push('<label>Heatmap view width (px)<input type="number" min="320" step="10" data-role="heatmap_view_width"></label>');
+h.push('<label>Heatmap view height (px)<input type="number" min="240" step="10" data-role="heatmap_view_height"></label>');
+h.push('<label>Species + trait view width (px)<input type="number" min="320" step="10" data-role="trait_view_width"></label>');
+h.push('<label>Species + trait view height (px)<input type="number" min="240" step="10" data-role="trait_view_height"></label>');
+h.push('<label>Default width (px)<input type="number" min="320" step="10" data-role="width"></label>');
+h.push('<label>Default height (px)<input type="number" min="240" step="10" data-role="height"></label>');
 h.push('<label>Aspect ratio (w/h)<input type="number" min="0.1" step="0.01" data-role="aspect_ratio"></label>');
 h.push('<label>Responsive fill<input type="checkbox" data-role="responsive"></label>');
 h.push('</div></details>');

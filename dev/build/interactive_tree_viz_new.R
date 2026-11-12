@@ -7,7 +7,7 @@
 #   - Click an internal-node diamond to flip its child clades (topology safe)
 #   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering
 #   - Second view: tree + species names + values of a selected trait
-#   - Appearance, titles, sizing, filtering, highlighting, dark/light mode
+#   - Appearance, titles, per-view sizing, filtering, highlighting, dark/light mode
 #   - Export PNG / SVG / PDF (print), Newick, heatmap CSV and config JSON
 #   - Built-in and user-saved configuration presets
 # =============================================================================
@@ -165,6 +165,10 @@ tree_viz_config <- function(
     width = NULL,
     height = NULL,
     aspect_ratio = NULL,
+    heatmap_view_width = NULL,
+    heatmap_view_height = NULL,
+    trait_view_width = NULL,
+    trait_view_height = NULL,
     tip_filter = NULL,
     clade = NULL,
     heatmap_columns = NULL,
@@ -192,6 +196,10 @@ tree_viz_config <- function(
     trait_panel_title = trait_panel_title,
     responsive = responsive, width = width, height = height,
     aspect_ratio = aspect_ratio,
+    heatmap_view_width = heatmap_view_width,
+    heatmap_view_height = heatmap_view_height,
+    trait_view_width = trait_view_width,
+    trait_view_height = trait_view_height,
     tip_filter = tip_filter, clade = clade,
     heatmap_columns = heatmap_columns, highlight = highlight,
     fan_angle = fan_angle, show_heatmap = show_heatmap
@@ -310,11 +318,17 @@ normalize_tree_viz_config <- function(cfg, traits, tree) {
   } else cfg$highlight <- NULL
 
   cfg$responsive <- lgl1(cfg$responsive, TRUE)
-  w <- suppressWarnings(as.numeric(cfg$width)); h <- suppressWarnings(as.numeric(cfg$height))
-  ar <- suppressWarnings(as.numeric(cfg$aspect_ratio))
-  cfg$width <- if (length(w) == 1L && is.finite(w) && w > 0) w else NULL
-  cfg$height <- if (length(h) == 1L && is.finite(h) && h > 0) h else NULL
-  cfg$aspect_ratio <- if (length(ar) == 1L && is.finite(ar) && ar > 0) ar else NULL
+  pos1 <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) == 1L && is.finite(v) && v > 0) v else NULL
+  }
+  cfg$width <- pos1(cfg$width)
+  cfg$height <- pos1(cfg$height)
+  cfg$aspect_ratio <- pos1(cfg$aspect_ratio)
+  cfg$heatmap_view_width <- pos1(cfg$heatmap_view_width)
+  cfg$heatmap_view_height <- pos1(cfg$heatmap_view_height)
+  cfg$trait_view_width <- pos1(cfg$trait_view_width)
+  cfg$trait_view_height <- pos1(cfg$trait_view_height)
   if (!cfg$responsive && is.null(cfg$width) && is.null(cfg$height)) {
     cfg$width <- 1000; cfg$height <- 700
   }
@@ -541,10 +555,18 @@ interactive_tree_viz <- function(
 
   # ----- responsive / fixed / aspect-ratio sizing -----
   # The widget JS sizes the plot div inside a flex column (control panel on
-  # top, plot filling the rest). Standalone pages get a viewport-height
-  # container from the JS; in R Markdown knitr supplies the height.
-  widget$width <- .itv_or(cfg$width, "100%")
-  widget$height <- .itv_or(cfg$height, "100%")
+  # top, plot filling the rest). Each view (heatmap vs species+trait) can have
+  # its own width/height; the initial view is the heatmap view.
+  initial_width  <- .itv_or(cfg$heatmap_view_width, cfg$width)
+  initial_height <- .itv_or(cfg$heatmap_view_height, cfg$height)
+  if (!is.null(cfg$aspect_ratio)) {
+    if (!is.null(initial_width) && is.null(initial_height))
+      initial_height <- initial_width / cfg$aspect_ratio
+    if (is.null(initial_width) && !is.null(initial_height))
+      initial_width <- initial_height * cfg$aspect_ratio
+  }
+  widget$width <- .itv_or(initial_width, "100%")
+  widget$height <- .itv_or(initial_height, "100%")
 
   suppressWarnings(suppressMessages(
     htmlwidgets::saveWidget(widget, output_file, selfcontained = selfcontained)

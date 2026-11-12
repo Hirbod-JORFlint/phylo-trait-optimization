@@ -215,19 +215,31 @@ function valueTrace(L) {
     showlegend: false, meta: "value" };
 }
 
+function viewDimsCfg() {
+  var traitView = (state.viewMode === "trait");
+  var vw = numOrNull(traitView ? cfg.trait_view_width : cfg.heatmap_view_width);
+  var vh = numOrNull(traitView ? cfg.trait_view_height : cfg.heatmap_view_height);
+  return {
+    width: (vw !== null) ? vw : numOrNull(cfg.width),
+    height: (vh !== null) ? vh : numOrNull(cfg.height),
+    aspect_ratio: numOrNull(cfg.aspect_ratio)
+  };
+}
+
 function containerDims() {
-  var w = numOrNull(cfg.width);
-  var h = numOrNull(cfg.height);
-  var ar = numOrNull(cfg.aspect_ratio);
+  var d = viewDimsCfg();
+  var w = d.width;
+  var h = d.height;
+  var ar = d.aspect_ratio;
   if (w === null) w = el.clientWidth || 900;
   if (h === null) {
     // Ignore the CSS min-height placeholder when no real height is available.
     h = (el.clientHeight && el.clientHeight > 240) ? el.clientHeight : 600;
   }
   if (ar !== null && ar > 0) {
-    if (numOrNull(cfg.width) !== null && numOrNull(cfg.height) === null) h = w / ar;
-    else if (numOrNull(cfg.height) !== null && numOrNull(cfg.width) === null) w = h * ar;
-    else if (numOrNull(cfg.width) === null && numOrNull(cfg.height) === null) h = w / ar;
+    if (d.width !== null && d.height === null) h = w / ar;
+    else if (d.height !== null && d.width === null) w = h * ar;
+    else if (d.width === null && d.height === null) h = w / ar;
   }
   return { width: Math.max(320, Math.round(w)), height: Math.max(240, Math.round(h)) };
 }
@@ -332,8 +344,9 @@ function plotConfig() {
 
 function applyContainerSizing() {
   var dims = containerDims();
-  var arOnly = numOrNull(cfg.aspect_ratio) !== null &&
-    numOrNull(cfg.width) === null && numOrNull(cfg.height) === null;
+  var d = viewDimsCfg();
+  var arOnly = d.aspect_ratio !== null &&
+    d.width === null && d.height === null;
   if (cfg.responsive && arOnly) {
     el.style.width = "100%";
     el.style.height = dims.height + "px";
@@ -349,10 +362,11 @@ function applyContainerSizing() {
                          parent.style.height !== "auto");
     var wc = document.getElementById("htmlwidget_container");
     var standalone = !!(wc && wc.parentNode === document.body);
+    var heightIsDerived = d.aspect_ratio !== null && d.width !== null;
     var fill = (standalone || parentSized) && parentH >= 240 &&
-               numOrNull(cfg.height) === null;
+               d.height === null && !heightIsDerived;
     if (wrap) wrap.style.height = fill ? "100%" : "auto";
-    el.style.width = "100%";
+    el.style.width = (d.width !== null) ? (dims.width + "px") : "100%";
     if (fill) {
       el.style.height = "";
       el.style.flex = "1 1 auto";
