@@ -1,16 +1,17 @@
+# Standalone source synchronized with diagnostics_on_tree_reorder.Rmd.
+
 # =============================================================================
 # interactive_tree_viz()
 # -----------------------------------------------------------------------------
 # Plotly-based interactive visualization of an ape phylo tree + trait heatmap.
-#   - Tree (rectangular phylogram) on the left, aligned trait heatmap on right
+#   - Rectangular, slanted, circular and fan layouts
 #   - Hover tips / internal nodes / heatmap cells for details
-#   - Click an internal-node diamond to flip (rotate) its two child clades
-#     without changing the topology
-#   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering before plot,
-#     with a button to restore the OLO-optimal order after manual edits
-#   - A button toggles a second view: tree + species names + values of a
-#     selected trait (one aligned panel per element, plot_phylo_composite-style)
-#   - Output: a standalone interactive HTML file (plotly.js htmlwidget)
+#   - Click an internal-node diamond to flip its child clades (topology safe)
+#   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering
+#   - Second view: tree + species names + values of a selected trait
+#   - Appearance, titles, per-view/subview sizing and alignment, filtering, highlighting, dark/light mode
+#   - Export PNG / SVG / PDF (print), Newick, heatmap CSV and config JSON
+#   - Built-in and user-saved configuration presets
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -133,6 +134,302 @@ layout_cost_2 <- function(phy, traits) {
   sum(sqrt(rowSums(diff(X)^2)))
 }
 
+# -----------------------------------------------------------------------------
+# Configuration helpers
+# -----------------------------------------------------------------------------
+.itv_or <- function(x, y) if (is.null(x)) y else x
+
+tree_viz_config <- function(
+    layout = "rectangular",
+    title = "Interactive phylogenetic tree + trait heatmap",
+    subtitle = "",
+    theme = "light",
+    tip_labels = TRUE,
+    tip_label_size = 10,
+    show_internal_nodes = TRUE,
+    internal_node_size = 9,
+    show_internal_node_ids = FALSE,
+    internal_node_id_size = 9,
+    tip_node_color = "#1f77b4",
+    tip_node_size = 7,
+    internal_node_color = "#e08a1e",
+    branch_color = "#8a8a8a",
+    branch_width = 1.4,
+    heatmap_colorscale = "Viridis",
+    heatmap_range = NULL,
+    heatmap_title = "Trait",
+    heatmap_colorbar_title = "value",
+    heatmap_panel_title = "Trait heatmap",
+    tree_panel_title = "Phylogenetic tree",
+    species_panel_title = "Species",
+    trait_panel_title = "",
+    trait_view_traits = NULL,
+    responsive = TRUE,
+    width = NULL,
+    height = NULL,
+    aspect_ratio = NULL,
+    heatmap_view_width = NULL,
+    heatmap_view_height = NULL,
+    trait_view_width = NULL,
+    trait_view_height = NULL,
+    auto_fit_subviews = FALSE,
+    heatmap_tree_width = NULL,
+    heatmap_panel_width = NULL,
+    trait_tree_width = NULL,
+    tips_panel_width = NULL,
+    trait_values_width = NULL,
+    heatmap_subview_alignment = "left",
+    trait_subview_alignment = "left",
+    tip_filter = NULL,
+    clade = NULL,
+    heatmap_columns = NULL,
+    highlight = NULL,
+    fan_angle = 300,
+    show_heatmap = TRUE
+) {
+  list(
+    layout = layout, title = title, subtitle = subtitle, theme = theme,
+    tip_labels = tip_labels, tip_label_size = tip_label_size,
+    show_internal_nodes = show_internal_nodes,
+    internal_node_size = internal_node_size,
+    show_internal_node_ids = show_internal_node_ids,
+    internal_node_id_size = internal_node_id_size,
+    tip_node_color = tip_node_color, tip_node_size = tip_node_size,
+    internal_node_color = internal_node_color,
+    branch_color = branch_color, branch_width = branch_width,
+    heatmap_colorscale = heatmap_colorscale,
+    heatmap_range = heatmap_range,
+    heatmap_title = heatmap_title,
+    heatmap_colorbar_title = heatmap_colorbar_title,
+    heatmap_panel_title = heatmap_panel_title,
+    tree_panel_title = tree_panel_title,
+    species_panel_title = species_panel_title,
+    trait_panel_title = trait_panel_title,
+    trait_view_traits = trait_view_traits,
+    responsive = responsive, width = width, height = height,
+    aspect_ratio = aspect_ratio,
+    heatmap_view_width = heatmap_view_width,
+    heatmap_view_height = heatmap_view_height,
+    trait_view_width = trait_view_width,
+    trait_view_height = trait_view_height,
+    auto_fit_subviews = auto_fit_subviews,
+    heatmap_tree_width = heatmap_tree_width,
+    heatmap_panel_width = heatmap_panel_width,
+    trait_tree_width = trait_tree_width,
+    tips_panel_width = tips_panel_width,
+    trait_values_width = trait_values_width,
+    heatmap_subview_alignment = heatmap_subview_alignment,
+    trait_subview_alignment = trait_subview_alignment,
+    tip_filter = tip_filter, clade = clade,
+    heatmap_columns = heatmap_columns, highlight = highlight,
+    fan_angle = fan_angle, show_heatmap = show_heatmap
+  )
+}
+
+merge_tree_viz_config <- function(base, override) {
+  if (is.null(override)) return(base)
+  if (!is.list(override)) stop("A configuration must be a list.", call. = FALSE)
+  for (nm in names(override)) {
+    if (is.null(nm) || !nzchar(nm)) next
+    base[[nm]] <- override[[nm]]
+  }
+  base
+}
+
+normalize_tree_viz_config <- function(cfg, traits, tree) {
+  defaults <- tree_viz_config()
+  cfg <- merge_tree_viz_config(defaults, cfg)
+  trait_names <- colnames(traits)
+  if (is.null(trait_names)) trait_names <- paste0("Trait", seq_len(ncol(traits)))
+  n_tip <- length(tree$tip.label)
+  n_node <- tree$Nnode
+  chr1 <- function(x, d) {
+    if (is.null(x) || length(x) != 1L || is.na(x)) d else as.character(x)
+  }
+  num1 <- function(x, d) {
+    if (is.null(x) || length(x) != 1L || !is.finite(suppressWarnings(as.numeric(x)))) d else as.numeric(x)
+  }
+  lgl1 <- function(x, d) if (is.null(x) || length(x) != 1L || is.na(x)) d else isTRUE(as.logical(x))
+
+  cfg$layout <- match.arg(chr1(cfg$layout, "rectangular"),
+                          c("rectangular", "slanted", "circular", "fan"))
+  cfg$theme <- match.arg(chr1(cfg$theme, "light"), c("light", "dark"))
+  cfg$title <- chr1(cfg$title, defaults$title)
+  cfg$subtitle <- chr1(cfg$subtitle, "")
+  cfg$tip_labels <- lgl1(cfg$tip_labels, TRUE)
+  cfg$show_internal_nodes <- lgl1(cfg$show_internal_nodes, TRUE)
+  cfg$show_internal_node_ids <- lgl1(cfg$show_internal_node_ids, FALSE)
+  cfg$show_heatmap <- lgl1(cfg$show_heatmap, TRUE)
+  cfg$tip_label_size <- num1(cfg$tip_label_size, 10)
+  cfg$internal_node_size <- num1(cfg$internal_node_size, 9)
+  cfg$internal_node_id_size <- num1(cfg$internal_node_id_size, 9)
+  cfg$tip_node_size <- num1(cfg$tip_node_size, 7)
+  cfg$branch_width <- num1(cfg$branch_width, 1.4)
+  cfg$fan_angle <- max(10, min(360, num1(cfg$fan_angle, 300)))
+  cfg$tip_node_color <- chr1(cfg$tip_node_color, "#1f77b4")
+  cfg$internal_node_color <- chr1(cfg$internal_node_color, "#e08a1e")
+  cfg$branch_color <- chr1(cfg$branch_color, "#8a8a8a")
+  cfg$heatmap_colorscale <- chr1(cfg$heatmap_colorscale, "Viridis")
+  cfg$heatmap_title <- chr1(cfg$heatmap_title, "Trait")
+  cfg$heatmap_colorbar_title <- chr1(cfg$heatmap_colorbar_title, "value")
+  cfg$heatmap_panel_title <- chr1(cfg$heatmap_panel_title, "Trait heatmap")
+  cfg$tree_panel_title <- chr1(cfg$tree_panel_title, "Phylogenetic tree")
+  cfg$species_panel_title <- chr1(cfg$species_panel_title, "Species")
+  cfg$trait_panel_title <- chr1(cfg$trait_panel_title, "")
+
+  hr <- cfg$heatmap_range
+  if (!is.null(hr) && length(hr) == 2L && all(is.finite(suppressWarnings(as.numeric(hr))))) {
+    cfg$heatmap_range <- sort(as.numeric(hr))
+  } else cfg$heatmap_range <- NULL
+
+  tf <- cfg$tip_filter
+  if (is.character(tf)) tf <- list(tips = tf)
+  if (is.logical(tf) && !is.null(names(tf))) tf <- list(tips = names(tf)[tf])
+  if (is.list(tf)) {
+    out <- list()
+    if (!is.null(tf$trait) && length(tf$trait) == 1L && tf$trait %in% trait_names) {
+      out$trait <- as.character(tf$trait)
+      mn <- suppressWarnings(as.numeric(tf$min)); mx <- suppressWarnings(as.numeric(tf$max))
+      out$min <- if (length(mn) == 1L && is.finite(mn)) mn else NULL
+      out$max <- if (length(mx) == 1L && is.finite(mx)) mx else NULL
+    } else if (!is.null(tf$trait)) {
+      warning("tip_filter$trait not found in trait columns; ignoring trait filter.", call. = FALSE)
+    }
+    if (!is.null(tf$tips)) {
+      tips_keep <- intersect(as.character(tf$tips), tree$tip.label)
+      if (length(tips_keep)) out$tips <- tips_keep
+    }
+    cfg$tip_filter <- if (length(out)) out else NULL
+  } else cfg$tip_filter <- NULL
+
+  cl <- cfg$clade
+  if (!is.null(cl)) {
+    cl <- suppressWarnings(as.integer(cl))
+    cl <- cl[is.finite(cl) & cl >= n_tip + 1L & cl <= n_tip + n_node]
+    cfg$clade <- if (length(cl)) cl else NULL
+  }
+
+  hc <- cfg$heatmap_columns
+  if (!is.null(hc)) {
+    if (is.numeric(hc)) {
+      hc <- trait_names[hc[hc >= 1 & hc <= length(trait_names)]]
+    } else {
+      hc <- intersect(as.character(hc), trait_names)
+    }
+    cfg$heatmap_columns <- hc
+  }
+
+  tv <- cfg$trait_view_traits
+  if (!is.null(tv)) {
+    if (is.numeric(tv)) {
+      tv_idx <- suppressWarnings(as.integer(tv))
+      tv_idx <- tv_idx[is.finite(tv_idx) & tv_idx >= 1 & tv_idx <= length(trait_names)]
+      tv <- trait_names[tv_idx]
+    } else {
+      tv <- intersect(as.character(tv), trait_names)
+    }
+    cfg$trait_view_traits <- unique(tv)
+  }
+
+  hl <- cfg$highlight
+  if (is.character(hl)) hl <- list(tips = hl)
+  if (is.logical(hl) && !is.null(names(hl))) hl <- list(tips = names(hl)[hl])
+  if (is.list(hl)) {
+    out <- list(color = chr1(hl$color, "#e41a1c"))
+    if (!is.null(hl$trait) && length(hl$trait) == 1L && hl$trait %in% trait_names) {
+      out$trait <- as.character(hl$trait)
+      mn <- suppressWarnings(as.numeric(hl$min)); mx <- suppressWarnings(as.numeric(hl$max))
+      out$min <- if (length(mn) == 1L && is.finite(mn)) mn else NULL
+      out$max <- if (length(mx) == 1L && is.finite(mx)) mx else NULL
+    }
+    if (!is.null(hl$tips)) {
+      tips_hl <- intersect(as.character(hl$tips), tree$tip.label)
+      if (length(tips_hl)) out$tips <- tips_hl
+    }
+    cfg$highlight <- if (length(out) > 1L) out else NULL
+  } else cfg$highlight <- NULL
+
+  cfg$responsive <- lgl1(cfg$responsive, TRUE)
+  pos1 <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) == 1L && is.finite(v) && v > 0) v else NULL
+  }
+  cfg$width <- pos1(cfg$width)
+  cfg$height <- pos1(cfg$height)
+  cfg$aspect_ratio <- pos1(cfg$aspect_ratio)
+  cfg$heatmap_view_width <- pos1(cfg$heatmap_view_width)
+  cfg$heatmap_view_height <- pos1(cfg$heatmap_view_height)
+  cfg$trait_view_width <- pos1(cfg$trait_view_width)
+  cfg$trait_view_height <- pos1(cfg$trait_view_height)
+  cfg$auto_fit_subviews <- lgl1(cfg$auto_fit_subviews, FALSE)
+  cfg$heatmap_tree_width <- pos1(cfg$heatmap_tree_width)
+  cfg$heatmap_panel_width <- pos1(cfg$heatmap_panel_width)
+  cfg$trait_tree_width <- pos1(cfg$trait_tree_width)
+  cfg$tips_panel_width <- pos1(cfg$tips_panel_width)
+  cfg$trait_values_width <- pos1(cfg$trait_values_width)
+  cfg$heatmap_subview_alignment <- match.arg(
+    chr1(cfg$heatmap_subview_alignment, "left"), c("left", "center", "right"))
+  cfg$trait_subview_alignment <- match.arg(
+    chr1(cfg$trait_subview_alignment, "left"), c("left", "center", "right"))
+  if (!cfg$responsive && is.null(cfg$width) && is.null(cfg$height)) {
+    cfg$width <- 1000; cfg$height <- 700
+  }
+  if (!is.null(cfg$aspect_ratio)) {
+    if (!is.null(cfg$width) && is.null(cfg$height)) cfg$height <- cfg$width / cfg$aspect_ratio
+    if (is.null(cfg$width) && !is.null(cfg$height)) cfg$width <- cfg$height * cfg$aspect_ratio
+  }
+  cfg
+}
+
+# Built-in visualization presets -------------------------------------------------
+tree_viz_presets <- local({
+  base <- tree_viz_config()
+  list(
+    default = base,
+    publication = merge_tree_viz_config(base, list(
+      title = "Phylogenetic tree and trait heatmap",
+      tip_label_size = 8, tip_node_size = 4, internal_node_size = 6,
+      branch_width = 1, heatmap_colorscale = "Cividis",
+      width = 1200, height = 900, responsive = FALSE
+    )),
+    dark = merge_tree_viz_config(base, list(
+      theme = "dark", heatmap_colorscale = "Plasma"
+    )),
+    compact = merge_tree_viz_config(base, list(
+      tip_labels = FALSE, show_internal_nodes = FALSE,
+      height = 500, heatmap_panel_title = ""
+    )),
+    colorblind = merge_tree_viz_config(base, list(
+      heatmap_colorscale = "Cividis",
+      tip_node_color = "#0072B2", internal_node_color = "#D55E00",
+      branch_color = "#555555", highlight = list(color = "#009E73")
+    ))
+  )
+})
+
+tree_viz_preset <- function(name = "default", ...) {
+  if (!is.character(name) || length(name) != 1L || !name %in% names(tree_viz_presets)) {
+    stop("Unknown preset '", name, "'. Available: ",
+         paste(names(tree_viz_presets), collapse = ", "), call. = FALSE)
+  }
+  merge_tree_viz_config(tree_viz_presets[[name]], list(...))
+}
+
+save_tree_viz_config <- function(config, file) {
+  if (!requireNamespace("jsonlite", quietly = TRUE))
+    stop("Package 'jsonlite' is required.", call. = FALSE)
+  jsonlite::write_json(config, file, auto_unbox = TRUE, pretty = TRUE,
+                       null = "null", digits = NA)
+  invisible(file)
+}
+
+load_tree_viz_config <- function(file) {
+  if (!requireNamespace("jsonlite", quietly = TRUE))
+    stop("Package 'jsonlite' is required.", call. = FALSE)
+  x <- jsonlite::read_json(file, simplifyVector = TRUE)
+  merge_tree_viz_config(tree_viz_config(), x)
+}
+
 # =============================================================================
 # MAIN FUNCTION
 # =============================================================================
@@ -144,7 +441,12 @@ interactive_tree_viz <- function(
     output_file = "interactive_tree.html",
     title = NULL,
     save_newick = NULL,         # optional path to write the (possibly reordered) tree
-    selfcontained = TRUE        # inline plotly.js bundle in the HTML
+    selfcontained = TRUE,       # inline plotly.js bundle in the HTML
+    config = NULL,              # list, or name of a built-in preset
+    preset = NULL,              # name of a built-in preset (or a config list)
+    save_heatmap_csv = NULL,    # optional path for the heatmap data
+    save_config = NULL,         # optional path for the configuration JSON
+    ...                         # any tree_viz_config() field, e.g. layout = "circular"
 ) {
   for (p in c("ape", "plotly", "htmlwidgets", "jsonlite")) {
     if (!requireNamespace(p, quietly = TRUE))
@@ -157,14 +459,49 @@ interactive_tree_viz <- function(
     traits <- as.matrix(traits)
   }
   if (!is.matrix(traits)) stop("'traits' must be a numeric matrix or data.frame.")
+  if (is.null(rownames(traits))) stop("'traits' must have rownames matching tree$tip.label.")
   missing_tips <- setdiff(tree$tip.label, rownames(traits))
   if (length(missing_tips))
     stop("Traits missing for tip(s): ", paste(missing_tips, collapse = ", "))
   n <- length(tree$tip.label)
   if (n < 2) stop("Tree must have at least 2 tips.")
   traits <- traits[tree$tip.label, , drop = FALSE]
-  if (is.null(title)) title <- "Interactive phylogenetic tree + trait heatmap"
   if (is.null(colnames(traits))) colnames(traits) <- paste0("Trait", seq_len(ncol(traits)))
+
+  # ----- resolve the initial configuration -----
+  defaults <- tree_viz_config()
+  cfg <- defaults
+  if (!is.null(preset)) {
+    if (is.character(preset) && length(preset) == 1L) {
+      if (!preset %in% names(tree_viz_presets))
+        stop("Unknown preset '", preset, "'. Available: ",
+             paste(names(tree_viz_presets), collapse = ", "), call. = FALSE)
+      cfg <- merge_tree_viz_config(cfg, tree_viz_presets[[preset]])
+    } else if (is.list(preset)) {
+      cfg <- merge_tree_viz_config(cfg, preset)
+    } else stop("'preset' must be a preset name or a configuration list.", call. = FALSE)
+  }
+  if (!is.null(config)) {
+    if (is.character(config) && length(config) == 1L) {
+      if (!config %in% names(tree_viz_presets))
+        stop("Unknown preset '", config, "'. Available: ",
+             paste(names(tree_viz_presets), collapse = ", "), call. = FALSE)
+      cfg <- merge_tree_viz_config(cfg, tree_viz_presets[[config]])
+    } else if (is.list(config)) {
+      cfg <- merge_tree_viz_config(cfg, config)
+    } else stop("'config' must be a preset name or a configuration list.", call. = FALSE)
+  }
+  extra <- list(...)
+  if (length(extra)) {
+    unknown <- setdiff(names(extra), names(defaults))
+    if (length(unknown))
+      warning("Unknown configuration field(s) ignored: ",
+              paste(unknown, collapse = ", "), call. = FALSE)
+    extra <- extra[intersect(names(extra), names(defaults))]
+    cfg <- merge_tree_viz_config(cfg, extra)
+  }
+  if (!is.null(title)) cfg$title <- title
+  cfg <- normalize_tree_viz_config(cfg, traits, tree)
 
   # scale guard: constant columns produce NaN after scale()
   if (scale_traits) {
@@ -180,14 +517,12 @@ interactive_tree_viz <- function(
   out_cost  <- layout_cost_2(tree, traits)
 
   if (reorder_olo) {
-    if (!requireNamespace("ape", quietly = TRUE)) stop("ape required for OLO.")
     node_counts <- table(tree$edge[, 1])
     if (any(node_counts > 2))
       stop("OLO requires a fully bifurcating tree; resolve polytomies with ape::multi2di().")
     d <- make_trait_dist_2(traits, tree, method = "euclidean", scale_traits = scale_traits)
     res <- olo_phylo_2(tree, d)
     ord_labels <- tree$tip.label[res$order]
-    # topology-preserving rotation into the OLO-optimal layout
     tree <- ape::rotateConstr(tree, ord_labels)
     olo_order <- ord_labels
     cost_mat  <- if (scale_traits) scale(traits) else traits
@@ -199,6 +534,17 @@ interactive_tree_viz <- function(
     ape::write.tree(tree, file = save_newick)
     cat("Step tree written to:", save_newick, "\n")
   }
+  if (!is.null(save_heatmap_csv)) {
+    ord <- leaf_order_2(tree)
+    hm <- data.frame(tip = ord, traits[ord, , drop = FALSE],
+                     check.names = FALSE, stringsAsFactors = FALSE)
+    utils::write.csv(hm, save_heatmap_csv, row.names = FALSE)
+    cat("Heatmap data written to:", save_heatmap_csv, "\n")
+  }
+  if (!is.null(save_config)) {
+    save_tree_viz_config(cfg, save_config)
+    cat("Configuration written to:", save_config, "\n")
+  }
 
   # ----- serialize tree structure + data for the browser -----
   children <- get_children_list_2(tree)
@@ -207,11 +553,10 @@ interactive_tree_viz <- function(
   edge_len <- rep(1, node_count)
   if (!is.null(tree$edge.length)) edge_len[tree$edge[, 2]] <- tree$edge.length
   root <- unique(setdiff(tree$edge[, 1], tree$edge[, 2]))
+  root <- root[1]
 
-  # only internal nodes are rotatable -> send those (tips have no children)
   child_map <- list()
   for (nd in (n + 1):node_count) child_map[[as.character(nd)]] <- children[[nd]]
-  root <- root[1]
 
   payload <- list(
     tips       = tree$tip.label,
@@ -223,12 +568,20 @@ interactive_tree_viz <- function(
     traitNames = colnames(traits),
     costMat    = lapply(seq_len(n), function(i) as.numeric(cost_mat[i, ])),
     oloOrder   = olo_order,
-    title      = title
+    title      = cfg$title,
+    config     = cfg,
+    defaults   = defaults,
+    presets    = tree_viz_presets,
+    costScaled = isTRUE(scale_traits),
+    outputFile = basename(output_file)
   )
-  payload_json <- jsonlite::toJSON(payload, auto_unbox = TRUE, digits = NA)
+  payload_json <- jsonlite::toJSON(payload, auto_unbox = TRUE, digits = NA,
+                                   null = "null")
 
   # ----- build the plotly htmlwidget -----
-  .js_body <- r"-(
+  # The widget JavaScript is embedded as a raw R string so this chunk is fully
+  # self-contained. __PAYLOAD__ is replaced by the per-dataset JSON payload.
+  js_body <- r"---(
 var TD = __PAYLOAD__;
 var tips = TD.tips;
 var children = TD.children;
@@ -239,313 +592,1734 @@ var traitsCost = TD.costMat || TD.traits;
 var tNames = TD.traitNames;
 var n = tips.length;
 var oloOrder = TD.oloOrder || null;
-var ttl = TD.title || "Phylogenetic tree";
+var costScaled = !!TD.costScaled;
 
-var rev = {};
-function initRev(){ rev = {}; for (var k in children) rev[k] = false; }
-initRev();
+function mergeCfg(base, over) {
+  var out = {};
+  for (var k in base) out[k] = base[k];
+  if (over) for (var k2 in over) out[k2] = over[k2];
+  return out;
+}
+function numOrNull(v) {
+  if (v === undefined || v === null || v === "") return null;
+  var x = +v;
+  return isFinite(x) ? x : null;
+}
+function asArray(v) {
+  if (v === undefined || v === null) return null;
+  return Array.isArray(v) ? v : [v];
+}
+function inRange(v, lo, hi) {
+  if (!isFinite(v)) return false;
+  if (lo !== null && v < lo) return false;
+  if (hi !== null && v > hi) return false;
+  return true;
+}
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
-function leafOrder(r){
-  var order = [];
-  (function dfs(node){
+var DEFAULT_CFG = mergeCfg({
+  layout: "rectangular",
+  title: "Interactive phylogenetic tree + trait heatmap",
+  subtitle: "",
+  theme: "light",
+  tip_labels: true,
+  tip_label_size: 10,
+  show_internal_nodes: true,
+  internal_node_size: 9,
+  show_internal_node_ids: false,
+  internal_node_id_size: 9,
+  tip_node_color: "#1f77b4",
+  tip_node_size: 7,
+  internal_node_color: "#e08a1e",
+  branch_color: "#8a8a8a",
+  branch_width: 1.4,
+  heatmap_colorscale: "Viridis",
+  heatmap_range: null,
+  heatmap_title: "Trait",
+  heatmap_colorbar_title: "value",
+  heatmap_panel_title: "Trait heatmap",
+  tree_panel_title: "Phylogenetic tree",
+  species_panel_title: "Species",
+  trait_panel_title: "",
+  trait_view_traits: null,
+  responsive: true,
+  width: null,
+  height: null,
+  aspect_ratio: null,
+  heatmap_view_width: null,
+  heatmap_view_height: null,
+  trait_view_width: null,
+  trait_view_height: null,
+  auto_fit_subviews: false,
+  heatmap_tree_width: null,
+  heatmap_panel_width: null,
+  trait_tree_width: null,
+  tips_panel_width: null,
+  trait_values_width: null,
+  heatmap_subview_alignment: "left",
+  trait_subview_alignment: "left",
+  tip_filter: null,
+  clade: null,
+  heatmap_columns: null,
+  highlight: null,
+  fan_angle: 300,
+  show_heatmap: true
+}, TD.defaults || {});
+var cfg = mergeCfg(DEFAULT_CFG, TD.config || {});
+
+var state = {
+  rev: {},
+  viewMode: "heat",
+  traitViewCols: [0],
+  visibleTips: {},
+  visibleCols: [],
+  filter: { traitIdx: null, min: null, max: null, tips: null },
+  clades: [],
+  highlight: { traitIdx: null, min: null, max: null, tips: null, color: "#e41a1c" },
+  presetValue: "",
+  lastLayout: null
+};
+var matchCache = {};
+var ui = null;
+
+function initRev() {
+  state.rev = {};
+  for (var k in children) state.rev[k] = false;
+}
+
+function recomputeVisibility() {
+  for (var t = 1; t <= n; t++) state.visibleTips[t] = true;
+  if (state.filter.tips && state.filter.tips.length) {
+    var keep = {};
+    for (var i = 0; i < state.filter.tips.length; i++) {
+      var idx = tips.indexOf(state.filter.tips[i]);
+      if (idx >= 0) keep[idx + 1] = true;
+    }
+    for (var t2 = 1; t2 <= n; t2++) if (!keep[t2]) state.visibleTips[t2] = false;
+  }
+  if (state.filter.traitIdx !== null) {
+    for (var t3 = 1; t3 <= n; t3++) {
+      var v = traitsHeat[t3 - 1][state.filter.traitIdx];
+      if (!inRange(v, state.filter.min, state.filter.max)) state.visibleTips[t3] = false;
+    }
+  }
+  if (state.clades.length) {
+    var inClade = {};
+    for (var c = 0; c < state.clades.length; c++) {
+      (function mark(node) {
+        var ch = children[node];
+        if (!ch) { inClade[node] = true; return; }
+        for (var j = 0; j < ch.length; j++) mark(ch[j]);
+      })(state.clades[c]);
+    }
+    for (var t4 = 1; t4 <= n; t4++) if (!inClade[t4]) state.visibleTips[t4] = false;
+  }
+  matchCache = {};
+}
+
+function initStateFromConfig() {
+  for (var t = 1; t <= n; t++) state.visibleTips[t] = true;
+  state.visibleCols = [];
+  for (var j = 0; j < tNames.length; j++) state.visibleCols.push(j);
+  var traitViewCols = asArray(cfg.trait_view_traits);
+  if (traitViewCols === null) {
+    state.traitViewCols = tNames.length ? [0] : [];
+  } else {
+    state.traitViewCols = [];
+    for (var tv = 0; tv < traitViewCols.length; tv++) {
+      var traitIdx = (typeof traitViewCols[tv] === "number") ? traitViewCols[tv] : tNames.indexOf(traitViewCols[tv]);
+      if (traitIdx >= 0 && traitIdx < tNames.length && state.traitViewCols.indexOf(traitIdx) < 0) {
+        state.traitViewCols.push(traitIdx);
+      }
+    }
+    state.traitViewCols.sort(function (a, b) { return a - b; });
+  }
+  state.filter = { traitIdx: null, min: null, max: null, tips: null };
+  state.clades = [];
+  state.highlight = { traitIdx: null, min: null, max: null, tips: null, color: "#e41a1c" };
+
+  var tf = cfg.tip_filter;
+  if (tf) {
+    tf = asArray(tf);
+    if (Array.isArray(tf) && tf.length && typeof tf[0] !== "object") tf = { tips: tf };
+    else if (Array.isArray(tf)) tf = tf[0] || {};
+    if (tf.trait !== undefined && tf.trait !== null) {
+      var ti = tNames.indexOf(tf.trait);
+      if (ti >= 0) {
+        state.filter.traitIdx = ti;
+        state.filter.min = numOrNull(tf.min);
+        state.filter.max = numOrNull(tf.max);
+      }
+    }
+    if (tf.tips) state.filter.tips = asArray(tf.tips).slice();
+  }
+  var cl = asArray(cfg.clade);
+  if (cl) {
+    state.clades = cl.map(Number).filter(function (x) { return isFinite(x); });
+  }
+  var hc = asArray(cfg.heatmap_columns);
+  if (hc) {
+    var cols = [];
+    for (var i = 0; i < hc.length; i++) {
+      var idx = (typeof hc[i] === "number") ? hc[i] : tNames.indexOf(hc[i]);
+      if (idx >= 0 && idx < tNames.length && cols.indexOf(idx) < 0) cols.push(idx);
+    }
+    state.visibleCols = cols;
+  }
+  var hl = cfg.highlight;
+  if (hl) {
+    hl = asArray(hl);
+    if (Array.isArray(hl) && hl.length && typeof hl[0] !== "object") hl = { tips: hl };
+    else if (Array.isArray(hl)) hl = hl[0] || {};
+    if (hl.trait !== undefined && hl.trait !== null) {
+      var hi = tNames.indexOf(hl.trait);
+      if (hi >= 0) {
+        state.highlight.traitIdx = hi;
+        state.highlight.min = numOrNull(hl.min);
+        state.highlight.max = numOrNull(hl.max);
+      }
+    }
+    if (hl.tips) state.highlight.tips = asArray(hl.tips).slice();
+    if (hl.color) state.highlight.color = hl.color;
+  }
+  recomputeVisibility();
+}
+
+function visibleTipCount() {
+  var c = 0;
+  for (var t = 1; t <= n; t++) if (state.visibleTips[t]) c++;
+  return c;
+}
+
+function tipMatches(t) {
+  if (state.highlight.tips && state.highlight.tips.length) {
+    return state.highlight.tips.indexOf(tips[t - 1]) >= 0;
+  }
+  if (state.highlight.traitIdx === null) return false;
+  var v = traitsHeat[t - 1][state.highlight.traitIdx];
+  return inRange(v, state.highlight.min, state.highlight.max);
+}
+
+function cladeMatches(node) {
+  if (matchCache[node] !== undefined) return matchCache[node];
+  var ch = children[node];
+  if (!ch) return matchCache[node] = (!!state.visibleTips[node] && tipMatches(node));
+  var any = false;
+  for (var i = 0; i < ch.length; i++) {
+    if (cladeMatches(ch[i])) { any = true; break; }
+  }
+  return matchCache[node] = any;
+}
+
+function buildFiltered(revMap) {
+  var fchildren = {};
+  var flen = {};
+  function rec(node) {
     var ch = children[node];
-    if(!ch){ order.push(node*1); return; }
-    var kk = r[node] ? ch.slice().reverse() : ch;
-    for(var i=0;i<kk.length;i++) dfs(kk[i]);
-  })(root);
+    if (!ch) {
+      if (!state.visibleTips[node]) return null;
+      return { id: node, len: (edgeLen[node] || 1), children: null };
+    }
+    var ordered = revMap[node] ? ch.slice().reverse() : ch.slice();
+    var kept = [];
+    for (var i = 0; i < ordered.length; i++) {
+      var r = rec(ordered[i]);
+      if (r) kept.push(r);
+    }
+    if (kept.length === 0) return null;
+    if (kept.length === 1) {
+      return { id: kept[0].id, len: (edgeLen[node] || 1) + kept[0].len, children: kept[0].children };
+    }
+    var ids = [];
+    for (var j = 0; j < kept.length; j++) {
+      ids.push(kept[j].id);
+      flen[kept[j].id] = kept[j].len;
+    }
+    fchildren[node] = ids;
+    return { id: node, len: (edgeLen[node] || 1), children: ids };
+  }
+  var top = rec(root);
+  if (!top) return null;
+  return { root: top.id, children: fchildren, len: flen };
+}
+
+function leafOrderFiltered(F) {
+  var order = [];
+  (function dfs(node) {
+    var ch = F.children[node];
+    if (!ch) { order.push(node * 1); return; }
+    for (var i = 0; i < ch.length; i++) dfs(ch[i]);
+  })(F.root);
   return order;
 }
 
-function leafCount(node){
-  var ch = children[node];
-  if(!ch) return 1;
-  var s = 0;
-  for(var i=0;i<ch.length;i++) s += leafCount(ch[i]);
-  return s;
-}
-
-function layoutCalc(r){
-  var order = leafOrder(r);
+function layoutCalcFiltered(F) {
+  var order = leafOrderFiltered(F);
+  var m = order.length;
   var y = {}, slot = {};
-  for(var i=0;i<order.length;i++){ slot[order[i]] = i+1; y[order[i]] = i+1; }
+  for (var i = 0; i < m; i++) { slot[order[i]] = i + 1; y[order[i]] = i + 1; }
   var mn = {}, mx = {};
-  (function ranges(node){
-    var ch = children[node];
-    if(!ch){ mn[node]=slot[node]; mx[node]=slot[node]; return; }
+  (function ranges(node) {
+    var ch = F.children[node];
+    if (!ch) { mn[node] = slot[node]; mx[node] = slot[node]; return; }
     var lo = Infinity, hi = -Infinity;
-    for(var i=0;i<ch.length;i++){
-      ranges(ch[i]);
-      if(mn[ch[i]] < lo) lo = mn[ch[i]];
-      if(mx[ch[i]] > hi) hi = mx[ch[i]];
+    for (var j = 0; j < ch.length; j++) {
+      ranges(ch[j]);
+      if (mn[ch[j]] < lo) lo = mn[ch[j]];
+      if (mx[ch[j]] > hi) hi = mx[ch[j]];
     }
     mn[node] = lo; mx[node] = hi;
     y[node] = (lo + hi) / 2;
-  })(root);
-  var x = {}; x[root] = 0;
-  (function xs(node){
-    var ch = children[node] || [];
-    for(var i=0;i<ch.length;i++){
-      x[ch[i]] = x[node] + (edgeLen[ch[i]] || 1);
-      xs(ch[i]);
+  })(F.root);
+  var x = {};
+  x[F.root] = 0;
+  (function xs(node) {
+    var ch = F.children[node] || [];
+    for (var j = 0; j < ch.length; j++) {
+      x[ch[j]] = x[node] + (F.len[ch[j]] || 1);
+      xs(ch[j]);
     }
-  })(root);
-  return {x:x, y:y, order:order};
+  })(F.root);
+  return { x: x, y: y, order: order, root: F.root, children: F.children, len: F.len, m: m, slot: slot, angle: null };
 }
 
-function edgeTrace(L){
+function circularLayout(L) {
+  var m = L.m;
+  var fan = cfg.layout === "fan";
+  var span = fan ? (Math.min(360, Math.max(10, +cfg.fan_angle || 300)) * Math.PI / 180) : 2 * Math.PI;
+  var start = -Math.PI / 2;
+  var angle = {}, count = {};
+  for (var i = 0; i < m; i++) angle[L.order[i]] = start + ((i + 0.5) / m) * span;
+  function calc(node) {
+    var ch = L.children[node];
+    if (!ch) { count[node] = 1; return angle[node]; }
+    var sx = 0, sy = 0, c = 0;
+    for (var j = 0; j < ch.length; j++) {
+      var a = calc(ch[j]);
+      var w = count[ch[j]];
+      sx += w * Math.cos(a); sy += w * Math.sin(a); c += w;
+    }
+    count[node] = c;
+    var a2 = Math.atan2(sy, sx);
+    angle[node] = a2;
+    return a2;
+  }
+  calc(L.root);
+  var maxD = 0;
+  for (var k in L.x) if (L.x[k] > maxD) maxD = L.x[k];
+  if (!(maxD > 0)) maxD = 1;
+  var cx = {}, cy = {}, r = {};
+  for (var k2 in L.x) {
+    r[k2] = L.x[k2] / maxD;
+    cx[k2] = r[k2] * Math.cos(angle[k2]);
+    cy[k2] = r[k2] * Math.sin(angle[k2]);
+  }
+  return { x: cx, y: cy, angle: angle, r: r, order: L.order, root: L.root, children: L.children, m: m, slot: L.slot, radial: true };
+}
+
+function leafCountOriginal(node) {
+  var ch = children[node];
+  if (!ch) return 1;
+  var s = 0;
+  for (var i = 0; i < ch.length; i++) s += leafCountOriginal(ch[i]);
+  return s;
+}
+
+function leafCountFiltered(L, node) {
+  var ch = L.children[node];
+  if (!ch) return 1;
+  var s = 0;
+  for (var i = 0; i < ch.length; i++) s += leafCountFiltered(L, ch[i]);
+  return s;
+}
+
+function themeColors() {
+  if (cfg.theme === "dark") {
+    return { bg: "#0f1115", paper: "#0f1115", font: "#e8e8e8", muted: "#a8b0b8",
+      grid: "#2a3038", axis: "#444c55", nodeEdge: "#f0f0f0", uiBg: "#171b21",
+      uiFg: "#e8e8e8", uiBorder: "#2f363f", uiInput: "#0f1115", uiAccent: "#4da3ff" };
+  }
+  return { bg: "#ffffff", paper: "#ffffff", font: "#222222", muted: "#666666",
+    grid: "#eeeeee", axis: "#cccccc", nodeEdge: "#ffffff", uiBg: "#f7f7f7",
+    uiFg: "#222222", uiBorder: "#dddddd", uiInput: "#ffffff", uiAccent: "#1f77b4" };
+}
+
+function edgeTrace(L) {
   var ex = [], ey = [];
-  (function go(node){
-    var ch = children[node] || [];
-    for(var i=0;i<ch.length;i++){
-      var c = ch[i];
-      ex.push(L.x[node], L.x[c], null); ey.push(L.y[node], L.y[node], null);
-      ex.push(L.x[c], L.x[c], null);    ey.push(L.y[node], L.y[c], null);
-      go(c);
-    }
-  })(root);
-  return {type:"scatter", mode:"lines", x:ex, y:ey,
-          line:{color:"#8a8a8a", width:1.4}, hoverinfo:"skip", showlegend:false};
+  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
+  if (radial) {
+    var r = L.r, ang = L.angle;
+    (function go(node) {
+      var ch = L.children[node] || [];
+      if (!ch.length) return;
+      var pr = r[node];
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i], ac = ang[c], rc = r[c];
+        ex.push(pr * Math.cos(ac), rc * Math.cos(ac), null);
+        ey.push(pr * Math.sin(ac), rc * Math.sin(ac), null);
+      }
+      var a0 = ang[ch[0]], a1 = ang[ch[ch.length - 1]];
+      if (a1 < a0) a1 += 2 * Math.PI;
+      var steps = Math.max(6, Math.ceil((a1 - a0) / 0.06));
+      for (var k = 0; k <= steps; k++) {
+        var a = a0 + (a1 - a0) * k / steps;
+        ex.push(pr * Math.cos(a)); ey.push(pr * Math.sin(a));
+      }
+      ex.push(null); ey.push(null);
+      for (var j = 0; j < ch.length; j++) go(ch[j]);
+    })(L.root);
+  } else {
+    var rect = (cfg.layout === "rectangular");
+    (function go2(node) {
+      var ch = L.children[node] || [];
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i];
+        if (rect) {
+          ex.push(L.x[node], L.x[c], null); ey.push(L.y[node], L.y[node], null);
+          ex.push(L.x[c], L.x[c], null); ey.push(L.y[node], L.y[c], null);
+        } else {
+          ex.push(L.x[node], L.x[c], null); ey.push(L.y[node], L.y[c], null);
+        }
+        go2(c);
+      }
+    })(L.root);
+  }
+  return { type: "scatter", mode: "lines", x: ex, y: ey,
+    line: { color: cfg.branch_color || "#8a8a8a", width: +cfg.branch_width || 1.4 },
+    hoverinfo: "skip", showlegend: false, meta: "edge" };
 }
 
-function tipTrace(L, showLabels){
-  var x=[], y=[], txt=[];
-  L.order.forEach(function(t){ x.push(L.x[t]); y.push(L.y[t]); txt.push(tips[t-1]); });
-  var tr = {type:"scatter", mode:"markers", x:x, y:y, text:txt,
-            hovertemplate:"<b>%{text}</b><extra>tip</extra>",
-            marker:{size:7, color:"#1f77b4", line:{width:1, color:"#ffffff"}},
-            showlegend:false};
-  if(showLabels !== false && n <= 40){ tr.mode = "markers+text"; tr.textposition = "middle right"; tr.textfont = {size:10}; }
+function tipMarker() {
+  return { size: +cfg.tip_node_size || 7, color: cfg.tip_node_color || "#1f77b4",
+    line: { width: 1, color: themeColors().nodeEdge } };
+}
+
+function tipTraces(L) {
+  // The species-name subview already labels every tip; dropping duplicate tree
+  // labels there saves width and prevents overlap in the auto-fit layout.
+  var labels = !!cfg.tip_labels && !(cfg.auto_fit_subviews && state.viewMode === "trait");
+  var mk = tipMarker();
+  if (cfg.layout !== "circular" && cfg.layout !== "fan") {
+    var x = [], y = [], txt = [], cd = [];
+    L.order.forEach(function (t) { x.push(L.x[t]); y.push(L.y[t]); txt.push(tips[t - 1]); cd.push(t); });
+    var tr = { type: "scatter", mode: labels ? "markers+text" : "markers",
+      x: x, y: y, text: txt, customdata: cd,
+      hovertemplate: "<b>%{text}</b><extra>tip</extra>",
+      marker: mk, showlegend: false, meta: "tip" };
+    if (labels) {
+      tr.textposition = "middle right";
+      tr.textfont = { size: +cfg.tip_label_size || 10, color: themeColors().font };
+    }
+    return [tr];
+  }
+  var groups = { right: [], left: [] };
+  L.order.forEach(function (t) {
+    var item = { x: L.x[t], y: L.y[t], text: tips[t - 1], cd: t };
+    (Math.cos(L.angle[t]) >= 0 ? groups.right : groups.left).push(item);
+  });
+  function make(items, pos) {
+    if (!items.length) return null;
+    var tr = { type: "scatter", mode: labels ? "markers+text" : "markers",
+      x: items.map(function (d) { return d.x; }), y: items.map(function (d) { return d.y; }),
+      text: items.map(function (d) { return d.text; }),
+      customdata: items.map(function (d) { return d.cd; }),
+      hovertemplate: "<b>%{text}</b><extra>tip</extra>",
+      marker: mk, showlegend: false, meta: "tip" };
+    if (labels) {
+      tr.textposition = pos;
+      tr.textfont = { size: +cfg.tip_label_size || 10, color: themeColors().font };
+    }
+    return tr;
+  }
+  return [make(groups.right, "middle right"), make(groups.left, "middle left")];
+}
+
+function highlightTipTrace(L) {
+  if (state.highlight.traitIdx === null && !(state.highlight.tips && state.highlight.tips.length)) return null;
+  var x = [], y = [], txt = [];
+  L.order.forEach(function (t) {
+    if (tipMatches(t)) { x.push(L.x[t]); y.push(L.y[t]); txt.push(tips[t - 1]); }
+  });
+  if (!x.length) return null;
+  return { type: "scatter", mode: "markers", x: x, y: y, text: txt,
+    marker: { symbol: "circle-open", size: (+cfg.tip_node_size || 7) + 6,
+      color: state.highlight.color, line: { width: 2.5, color: state.highlight.color } },
+    hovertemplate: "<b>%{text}</b><br>highlighted<extra></extra>",
+    showlegend: false, meta: "highlight" };
+}
+
+function intTrace(L) {
+  if (!cfg.show_internal_nodes) return null;
+  var x = [], y = [], cd = [], hover = [], labels = [], colors = [], sizes = [];
+  var keys = [];
+  for (var k in L.children) keys.push(+k);
+  keys.sort(function (a, b) { return a - b; });
+  keys.forEach(function (nd) {
+    x.push(L.x[nd]); y.push(L.y[nd]); cd.push(nd);
+    var cnt = leafCountFiltered(L, nd);
+    hover.push(cnt + " visible tips in this clade - click to rotate");
+    labels.push(cfg.show_internal_node_ids ? String(nd) : "");
+    var hl = ((state.highlight.traitIdx !== null || (state.highlight.tips && state.highlight.tips.length)) && cladeMatches(nd));
+    colors.push(hl ? state.highlight.color : (cfg.internal_node_color || "#e08a1e"));
+    sizes.push((+cfg.internal_node_size || 9) + (hl ? 4 : 0));
+  });
+  return { type: "scatter", mode: cfg.show_internal_node_ids ? "markers+text" : "markers",
+    x: x, y: y, customdata: cd, text: labels, hovertext: hover,
+    hovertemplate: "<b>Internal node %{customdata}</b><br>%{hovertext}<extra></extra>",
+    marker: { symbol: "diamond", size: sizes, color: colors,
+      line: { width: 1, color: themeColors().nodeEdge } },
+    textposition: (cfg.layout === "circular" || cfg.layout === "fan") ? "middle center" : "top center",
+    textfont: { size: +cfg.internal_node_id_size || 9, color: themeColors().font },
+    showlegend: false, meta: "internal" };
+}
+
+function heatTrace(L) {
+  if (!cfg.show_heatmap) return null;
+  var cols = state.visibleCols;
+  if (!cols.length) return null;
+  var Z = [], Y = [], CD = [];
+  L.order.forEach(function (t) {
+    var row = [];
+    for (var j = 0; j < cols.length; j++) row.push(traitsHeat[t - 1][cols[j]]);
+    Z.push(row); Y.push(L.slot[t]);
+    var line = [];
+    for (var j2 = 0; j2 < cols.length; j2++) line.push(tips[t - 1]);
+    CD.push(line);
+  });
+  var tr = { type: "heatmap", z: Z,
+    x: cols.map(function (i) { return tNames[i]; }), y: Y,
+    xaxis: "x2", yaxis: "y2",
+    colorscale: cfg.heatmap_colorscale || "Viridis",
+    colorbar: { thickness: 10, len: 0.6, y: 0.5,
+      title: { text: cfg.heatmap_colorbar_title || "value" } },
+    hovertemplate: "<b>%{customdata}</b><br>%{x}: %{z:.3f}<extra></extra>",
+    customdata: CD, showlegend: false, meta: "heatmap" };
+  if (cfg.heatmap_range && cfg.heatmap_range.length === 2) {
+    if (cfg.heatmap_range[0] !== null) tr.zmin = +cfg.heatmap_range[0];
+    if (cfg.heatmap_range[1] !== null) tr.zmax = +cfg.heatmap_range[1];
+  }
   return tr;
 }
 
-function intTrace(L){
-  var x=[], y=[], cd=[], tt=[];
-  var keys = [];
-  for(var k in children) keys.push(+k);
-  keys.sort(function(a,b){ return a-b; });
-  keys.forEach(function(nd){
-    x.push(L.x[nd]); y.push(L.y[nd]); cd.push(nd);
-    tt.push(leafCount(nd) + " tips in this clade - click to rotate");
-  });
-  return {type:"scatter", mode:"markers", x:x, y:y, customdata:cd, text:tt,
-          hovertemplate:"<b>Internal node %{customdata}</b><br>%{text}<extra></extra>",
-          marker:{symbol:"diamond", size:9, color:"#e08a1e", line:{width:1, color:"#9a5a00"}},
-          showlegend:false};
+function visibleTraitValues(traitIdx) {
+  var vals = [];
+  for (var t = 1; t <= n; t++) if (state.visibleTips[t]) vals.push(traitsHeat[t - 1][traitIdx]);
+  return vals;
 }
 
-function heatTrace(L){
-  var Z = [];
-  L.order.forEach(function(t){ Z.push(traitsHeat[t-1]); });
-  return {type:"heatmap", z:Z,
-          y:L.order.map(function(t){ return tips[t-1]; }),
-          x:tNames, xaxis:"x2", yaxis:"y2",
-          colorscale:"Viridis",
-          colorbar:{thickness:10, len:0.6, y:0.5, title:{text:"value"}},
-          hovertemplate:"<b>%{y}</b><br>%{x}: %{z:.3f}<extra></extra>",
-          showlegend:false};
-}
-
-// ---------------------------------------------------------------------------
-// Second view: tree + species names + selected trait values (composite panels)
-// ---------------------------------------------------------------------------
-var viewMode = "heat";   // "heat" = tree + heatmap, "trait" = tree + names + values
-var traitIdx = 0;
-
-function traitValues(){
-  return traitsHeat.map(function(row){ return row[traitIdx]; });
-}
-
-function traitRange(){
-  var v = traitValues();
-  var lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
+function traitRange(traitIdx) {
+  var v = visibleTraitValues(traitIdx);
+  var lo = Infinity, hi = -Infinity;
+  for (var i = 0; i < v.length; i++) {
+    if (isFinite(v[i])) { if (v[i] < lo) lo = v[i]; if (v[i] > hi) hi = v[i]; }
+  }
+  if (!isFinite(lo) || !isFinite(hi)) return [0, 1];
   var pad = (hi - lo) * 0.12;
-  if(!(pad > 0)) pad = 0.1;
+  if (!(pad > 0)) pad = 0.1;
   return [lo - pad, hi + pad];
 }
 
-function labelStride(){
-  // keep the species panel readable for large trees: at most ~45 labels
-  return Math.max(1, Math.ceil(n / 45));
+function labelStride() {
+  var m = state.lastLayout ? state.lastLayout.m : n;
+  return Math.max(1, Math.ceil(m / 45));
 }
 
-function namesTrace(L){
+function namesTrace(L) {
   var stride = labelStride();
   var x = [], y = [], txt = [];
-  L.order.forEach(function(t, i){
-    if(i % stride !== 0) return;
-    x.push(0.02); y.push(L.y[t]);
-    txt.push("<i>" + tips[t-1] + "</i>");
+  L.order.forEach(function (t, i) {
+    if (i % stride !== 0) return;
+    x.push(0.02); y.push(L.slot[t]); txt.push("<i>" + tips[t - 1] + "</i>");
   });
-  return {type:"scatter", mode:"text", x:x, y:y, text:txt,
-          xaxis:"x2", yaxis:"y",
-          textposition:"middle right",
-          textfont:{size:10, family:"Times New Roman, Georgia, serif"},
-          hovertemplate:"<b>%{text}</b><extra>species</extra>",
-          showlegend:false};
+  return { type: "scatter", mode: "text", x: x, y: y, text: txt,
+    xaxis: "x2", yaxis: "y2", textposition: "middle right",
+    textfont: { size: 10, family: "Times New Roman, Georgia, serif", color: themeColors().font },
+    hovertemplate: "<b>%{text}</b><extra>species</extra>",
+    showlegend: false, meta: "names" };
 }
 
-function guideTrace(L, xr){
+function guideTrace(L, xr, axisId) {
   var x = [], y = [];
-  L.order.forEach(function(t){
+  L.order.forEach(function (t) {
     x.push(xr[0], xr[1], null);
-    y.push(L.y[t], L.y[t], null);
+    y.push(L.slot[t], L.slot[t], null);
   });
-  return {type:"scatter", mode:"lines", x:x, y:y,
-          xaxis:"x3", yaxis:"y",
-          line:{color:"#d9d9d9", width:0.8, dash:"dot"},
-          hoverinfo:"skip", showlegend:false};
+  return { type: "scatter", mode: "lines", x: x, y: y,
+    xaxis: axisId, yaxis: "y2",
+    line: { color: themeColors().grid, width: 0.8, dash: "dot" },
+    hoverinfo: "skip", showlegend: false, meta: "guide" };
 }
 
-function valueTrace(L){
-  var vals = traitValues();
+function valueTrace(L, traitIdx, axisId, color) {
   var x = [], y = [], txt = [], cd = [];
-  L.order.forEach(function(t){
-    x.push(vals[t-1]); y.push(L.y[t]);
-    txt.push("<i>" + tips[t-1] + "</i>"); cd.push(vals[t-1]);
+  L.order.forEach(function (t) {
+    var v = traitsHeat[t - 1][traitIdx];
+    x.push(v); y.push(L.slot[t]); txt.push("<i>" + tips[t - 1] + "</i>"); cd.push(v);
   });
-  return {type:"scatter", mode:"markers", x:x, y:y, text:txt, customdata:cd,
-          xaxis:"x3", yaxis:"y",
-          hovertemplate:"<b>%{text}</b><br>" + tNames[traitIdx] + ": %{customdata:.3f}<extra>trait</extra>",
-          marker:{size:8, color:"#228b22", line:{width:1, color:"#ffffff"}},
-          showlegend:false};
+  return { type: "scatter", mode: "markers", x: x, y: y, text: txt, customdata: cd,
+    xaxis: axisId, yaxis: "y2",
+    hovertemplate: "<b>%{text}</b><br>" + esc(tNames[traitIdx]) + ": %{customdata:.3f}<extra>trait</extra>",
+    marker: { size: 8, color: color, line: { width: 1, color: themeColors().nodeEdge } },
+    showlegend: false, meta: "value" };
 }
 
-var lay = {
-  title:{text: ttl},
-  xaxis:{domain:[0,0.40], showgrid:false, zeroline:false, showticklabels:false},
-  yaxis:{domain:[0.05,0.96], range:[0.5,n+0.5], showgrid:false, zeroline:false, showticklabels:false},
-  xaxis2:{domain:[0.50,0.90], type:"category", autorange:true, showgrid:false, zeroline:false,
-          showticklabels:true, visible:true, title:{text:"Trait"}, tickangle:-30, automargin:true},
-  yaxis2:{domain:[0.05,0.96], range:[0.5,n+0.5], visible:true, showgrid:false, showticklabels:false},
-  xaxis3:{visible:false},
-  annotations:[],
-  margin:{l:30,r:20,t:70,b:60},
-  showlegend:false, hovermode:"closest"
-};
-
-function traitLayout(){
-  var xr = traitRange();
+function viewDimsCfg() {
+  var traitView = (state.viewMode === "trait");
+  var vw = numOrNull(traitView ? cfg.trait_view_width : cfg.heatmap_view_width);
+  var vh = numOrNull(traitView ? cfg.trait_view_height : cfg.heatmap_view_height);
   return {
-    title:{text: ttl},
-    xaxis:{domain:[0,0.34], showgrid:false, zeroline:false, showticklabels:false},
-    yaxis:{domain:[0.05,0.96], range:[0.5,n+0.5], showgrid:false, zeroline:false, showticklabels:false},
-    xaxis2:{domain:[0.36,0.60], range:[0,1], type:"linear", showgrid:false, zeroline:false,
-            showticklabels:false, visible:true, title:{text:""}, tickangle:0, automargin:false},
-    xaxis3:{domain:[0.68,0.97], range:xr, type:"linear", visible:true, showgrid:true,
-            gridcolor:"#efefef", zeroline:false, automargin:true},
-    yaxis2:{visible:false},
-    annotations:[
-      {text:"Phylogenetic tree", xref:"paper", yref:"paper", x:0.17, y:1.02,
-       showarrow:false, font:{size:13}},
-      {text:"Species" + (labelStride() > 1 ? " (1 in " + labelStride() + ")" : ""),
-       xref:"paper", yref:"paper", x:0.48, y:1.02, showarrow:false, font:{size:13}},
-      {text:tNames[traitIdx] + " value", xref:"paper", yref:"paper", x:0.825, y:1.02,
-       showarrow:false, font:{size:13}}
-    ],
-    margin:{l:30,r:20,t:90,b:60},
-    showlegend:false, hovermode:"closest"
+    width: (vw !== null) ? vw : numOrNull(cfg.width),
+    height: (vh !== null) ? vh : numOrNull(cfg.height),
+    aspect_ratio: numOrNull(cfg.aspect_ratio)
   };
 }
 
-var costEl = null;
-function updateCost(L){
-  var s = 0;
-  for(var i=1;i<L.order.length;i++){
-    var a = traitsCost[L.order[i-1]-1];
-    var b = traitsCost[L.order[i]-1];
-    var d2 = 0;
-    for(var j=0;j<a.length;j++){ var dd = a[j]-b[j]; d2 += dd*dd; }
-    s += Math.sqrt(d2);
+function containerDims() {
+  var d = viewDimsCfg();
+  var w = d.width;
+  var h = d.height;
+  var ar = d.aspect_ratio;
+  if (w === null) {
+    var hostWidth = (wrap && wrap.clientWidth) || el.clientWidth || 900;
+    var minAutoWidth = 640;
+    if (state.viewMode === "trait") {
+      var extraTraitWidth = Math.max(0, state.traitViewCols.length - 1) *
+        (cfg.auto_fit_subviews ? 130 : 270);
+      minAutoWidth = 750 + extraTraitWidth;
+    }
+    w = cfg.auto_fit_subviews ? Math.max(hostWidth, minAutoWidth) : hostWidth;
+    if (state.viewMode === "trait" && state.traitViewCols.length > 1) {
+      w = Math.max(w, minAutoWidth);
+    }
   }
-  if(costEl) costEl.textContent = s.toFixed(4);
+  if (h === null) {
+    // Ignore the CSS min-height placeholder when no real height is available.
+    h = (el.clientHeight && el.clientHeight > 240) ? el.clientHeight : 600;
+  }
+  if (ar !== null && ar > 0) {
+    if (d.width !== null && d.height === null) h = w / ar;
+    else if (d.height !== null && d.width === null) w = h * ar;
+    else if (d.width === null && d.height === null) h = w / ar;
+  }
+  return { width: Math.max(320, Math.round(w)), height: Math.max(240, Math.round(h)) };
 }
 
-function revForTarget(targetLabels){
+var tipWidthCache = {};
+function naturalTipsPanelWidth(L) {
+  var key = tips.join("\u0001");
+  if (tipWidthCache[key] !== undefined) return tipWidthCache[key];
+  var ctx = document.createElement("canvas").getContext("2d");
+  ctx.font = "10px Times New Roman, Georgia, serif";
+  var max = 0;
+  for (var i = 0; i < L.order.length; i++) {
+    var w = ctx.measureText(tips[L.order[i] - 1]).width;
+    if (w > max) max = w;
+  }
+  // Small insets keep the label panel snug without clipping long names.
+  tipWidthCache[key] = Math.max(54, Math.min(340, Math.ceil(max + 22)));
+  return tipWidthCache[key];
+}
+
+function panelDomains(dims, L) {
+  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
+  var traitView = (state.viewMode === "trait");
+  var plotW = Math.max(1, dims.width - 50);
+  var xMin = 0.01, xMax = 0.97;
+  var available = (xMax - xMin) * plotW;
+  var widths = [], gaps = [];
+  var align = "left";
+
+  if (traitView) {
+    align = cfg.trait_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeW = Math.round(available * (radial ? 0.32 : 0.32));
+      var tipsW = naturalTipsPanelWidth(L);
+      var gap = 12;
+      var valuesW = Math.max(Math.round(available * 0.40), state.traitViewCols.length * 110);
+      var deficit = treeW + tipsW + valuesW + 2 * gap - available;
+      if (deficit > 0) {
+        var treeShrink = Math.min(deficit, Math.max(0, treeW - 150));
+        treeW -= treeShrink;
+        deficit -= treeShrink;
+        var valuesShrink = Math.min(deficit, Math.max(0, valuesW - 150));
+        valuesW -= valuesShrink;
+        deficit -= valuesShrink;
+        tipsW -= Math.min(deficit, Math.max(0, tipsW - 54));
+      }
+      widths = [treeW, tipsW, valuesW];
+      gaps = [gap, gap];
+    } else {
+      var defaultValuesWidth = Math.max(Math.round(plotW * 0.29), state.traitViewCols.length * 105);
+      widths = [
+        numOrNull(cfg.trait_tree_width) || Math.round(plotW * (radial ? 0.34 : 0.33)),
+        numOrNull(cfg.tips_panel_width) || Math.round(plotW * (radial ? 0.23 : 0.24)),
+        numOrNull(cfg.trait_values_width) || defaultValuesWidth
+      ];
+      gaps = [plotW * (radial ? 0.02 : 0.02), plotW * (radial ? 0.09 : 0.08)];
+    }
+  } else {
+    align = cfg.heatmap_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeHeatW = Math.round(available * (radial ? 0.50 : 0.46));
+      var naturalHeatW = Math.max(180, Math.ceil(state.visibleCols.length * 48 + 90));
+      var heatW = Math.min(Math.round(available * 0.45), naturalHeatW);
+      var heatGap = 12;
+      var excess = treeHeatW + heatW + heatGap - available;
+      if (excess > 0) treeHeatW = Math.max(150, treeHeatW - excess);
+      widths = [treeHeatW, heatW];
+      gaps = [heatGap];
+    } else {
+      widths = [
+        numOrNull(cfg.heatmap_tree_width) || Math.round(plotW * (radial ? 0.55 : 0.39)),
+        numOrNull(cfg.heatmap_panel_width) || Math.round(plotW * (radial ? 0.29 : 0.40))
+      ];
+      gaps = [plotW * (radial ? 0.07 : 0.10)];
+    }
+  }
+
+  var used = widths.reduce(function (a, b) { return a + b; }, 0) +
+    gaps.reduce(function (a, b) { return a + b; }, 0);
+  if (used > available) {
+    var scale = Math.max(0.05, (available - gaps.reduce(function (a, b) { return a + b; }, 0)) /
+      widths.reduce(function (a, b) { return a + b; }, 0));
+    widths = widths.map(function (w) { return w * scale; });
+    used = widths.reduce(function (a, b) { return a + b; }, 0) +
+      gaps.reduce(function (a, b) { return a + b; }, 0);
+  }
+  var spare = Math.max(0, available - used);
+  var offset = align === "center" ? spare / 2 : (align === "right" ? spare : 0);
+  var cursor = xMin + offset / plotW;
+  function take(width, trailingLabelWidth) {
+    var start = cursor;
+    var domainWidth = Math.max(1, width - (trailingLabelWidth || 0));
+    cursor += width / plotW;
+    return [start, start + domainWidth / plotW, 0.05, 0.92];
+  }
+  function advanceGap(px) { cursor += px / plotW; }
+
+  var treeLabelGutter = (!traitView && cfg.auto_fit_subviews && cfg.tip_labels)
+    ? naturalTipsPanelWidth(L) : 0;
+  var tree = take(widths[0], treeLabelGutter);
+  if (traitView) {
+    advanceGap(gaps[0]);
+    var names = take(widths[1]);
+    advanceGap(gaps[1]);
+    var values = take(widths[2]);
+    return { tree: tree, names: names, values: values };
+  }
+  advanceGap(gaps[0]);
+  return { tree: tree, heat: take(widths[1]) };
+}
+
+function xdom(rect) { return [rect[0], rect[1]]; }
+function ydom(rect) { return [rect[2], rect[3]]; }
+
+// Shrink a panel rectangle to the largest square (in pixels) centred inside
+// it, so radial trees stay circular instead of stretching with the panel.
+function squareTreeDomain(rect, dims) {
+  var ml = 30, mr = 20, mt = 90, mb = 60;
+  var plotW = Math.max(1, dims.width - ml - mr);
+  var plotH = Math.max(1, dims.height - mt - mb);
+  var panelW = (rect[1] - rect[0]) * plotW;
+  var panelH = (rect[3] - rect[2]) * plotH;
+  var side = Math.min(panelW, panelH);
+  var cx = (rect[0] + rect[1]) / 2, cy = (rect[2] + rect[3]) / 2;
+  var hw = side / plotW / 2, hh = side / plotH / 2;
+  return [cx - hw, cx + hw, cy - hh, cy + hh];
+}
+
+function buildLayout(L) {
+  var t = themeColors();
+  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
+  var m = L.m;
+  var dims = containerDims();
+  var dom = panelDomains(dims, L);
+  if (radial) dom.tree = squareTreeDomain(dom.tree, dims);
+  var lay = {
+    title: { text: cfg.title || "", x: 0.5, xanchor: "center", font: { size: 18, color: t.font } },
+    paper_bgcolor: t.paper, plot_bgcolor: t.bg,
+    font: { color: t.font, family: "-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" },
+    margin: { l: 30, r: 20, t: 90, b: 60 },
+    showlegend: false, hovermode: "closest",
+    autosize: !!cfg.responsive
+  };
+  if (cfg.subtitle) {
+    lay.title.text = (cfg.title || "") + "<br><span style='font-size:12px;color:" + t.muted + "'>" + cfg.subtitle + "</span>";
+  }
+  if (!cfg.responsive) {
+    lay.autosize = false;
+    lay.width = dims.width; lay.height = dims.height;
+  } else if (numOrNull(cfg.aspect_ratio) !== null) {
+    lay.height = dims.height;
+  }
+  lay.xaxis = { domain: xdom(dom.tree), showgrid: false, zeroline: false, showticklabels: false, visible: false, fixedrange: true };
+  lay.yaxis = { domain: ydom(dom.tree), showgrid: false, zeroline: false, showticklabels: false, visible: false, fixedrange: true };
+  if (radial) {
+    lay.xaxis.range = [-1.18, 1.18]; lay.yaxis.range = [-1.18, 1.18];
+  } else {
+    lay.yaxis.range = [0.5, m + 0.5];
+  }
+  lay.annotations = [];
+  for (var ax = 3; ax < 3 + tNames.length; ax++) lay["xaxis" + ax] = { visible: false };
+  if (state.viewMode === "trait") {
+    lay.xaxis2 = { domain: xdom(dom.names), anchor: "y2", range: [0, 1], type: "linear", showgrid: false, zeroline: false, showticklabels: false, visible: false, fixedrange: true };
+    lay.yaxis2 = { domain: ydom(dom.names), anchor: "x2", range: [0.5, m + 0.5], visible: false, showgrid: false, zeroline: false, showticklabels: false, fixedrange: true };
+    lay.annotations.push({ text: cfg.tree_panel_title || "Phylogenetic tree", xref: "paper", yref: "paper",
+      x: (dom.tree[0] + dom.tree[1]) / 2, y: 1.01, showarrow: false, font: { size: 13, color: t.font } });
+    lay.annotations.push({ text: (cfg.species_panel_title || "Species") + (labelStride() > 1 ? " (1 in " + labelStride() + ")" : ""),
+      xref: "paper", yref: "paper", x: (dom.names[0] + dom.names[1]) / 2, y: 1.01, showarrow: false, font: { size: 13, color: t.font } });
+    var traitCols = state.traitViewCols;
+    if (!traitCols.length) {
+      lay.annotations.push({ text: "No trait values selected. Use the Trait values dropdown above.", xref: "paper", yref: "paper",
+        x: (dom.values[0] + dom.values[1]) / 2, y: 0.5, showarrow: false, font: { size: 12, color: t.muted } });
+    } else {
+      var totalValuesWidth = dom.values[1] - dom.values[0];
+      var axisSlot = totalValuesWidth / traitCols.length;
+      var axisGap = Math.min(0.012, axisSlot * 0.08);
+      for (var vi = 0; vi < traitCols.length; vi++) {
+        var traitCol = traitCols[vi];
+        var axisNum = 3 + vi;
+        var axisName = "x" + axisNum;
+        var axisStart = dom.values[0] + vi * axisSlot + axisGap;
+        var axisEnd = dom.values[0] + (vi + 1) * axisSlot - axisGap;
+        lay["xaxis" + axisNum] = {
+          domain: [axisStart, Math.max(axisStart + 0.005, axisEnd)], anchor: "y2",
+          range: traitRange(traitCol), type: "linear", showgrid: true, gridcolor: t.grid,
+          zeroline: false, automargin: true, tickfont: { size: 10, color: t.font },
+          title: { text: esc(tNames[traitCol]) + " value", font: { size: 10, color: t.font } }
+        };
+      }
+      var valueHeading = cfg.trait_panel_title ||
+        (traitCols.length > 1 ? "Trait values · independent scales" : "");
+      if (valueHeading) {
+        lay.annotations.push({ text: valueHeading, xref: "paper", yref: "paper",
+          x: (dom.values[0] + dom.values[1]) / 2, y: 1.01, showarrow: false, font: { size: 13, color: t.font } });
+      }
+    }
+  } else {
+    lay.xaxis2 = { domain: xdom(dom.heat), anchor: "y2", type: "category", showgrid: false, zeroline: false, showticklabels: true, visible: true,
+      title: { text: cfg.heatmap_title || "Trait", font: { size: 12, color: t.font } }, tickangle: -30, automargin: true, tickfont: { color: t.font } };
+    lay.yaxis2 = { domain: ydom(dom.heat), anchor: "x2", range: [0.5, m + 0.5], visible: false, showgrid: false, zeroline: false, showticklabels: false, fixedrange: true };
+    if (cfg.tree_panel_title) {
+      lay.annotations.push({ text: cfg.tree_panel_title, xref: "paper", yref: "paper",
+        x: (dom.tree[0] + dom.tree[1]) / 2, y: 1.01, showarrow: false, font: { size: 13, color: t.font } });
+    }
+    if (cfg.heatmap_panel_title) {
+      lay.annotations.push({ text: cfg.heatmap_panel_title, xref: "paper", yref: "paper",
+        x: (dom.heat[0] + dom.heat[1]) / 2, y: 1.01, showarrow: false, font: { size: 13, color: t.font } });
+    }
+    if (!cfg.show_heatmap || !state.visibleCols.length) {
+      lay.annotations.push({ text: "Heatmap hidden or no trait columns selected.", xref: "paper", yref: "paper",
+        x: (dom.heat[0] + dom.heat[1]) / 2, y: 0.5, showarrow: false, font: { size: 12, color: t.muted } });
+    }
+  }
+  return lay;
+}
+
+function plotConfig() {
+  var dims = containerDims();
+  return { responsive: !!cfg.responsive, displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    toImageButtonOptions: { format: "png", filename: "tree_viz", width: dims.width, height: dims.height, scale: 1 } };
+}
+
+function applyContainerSizing() {
+  var dims = containerDims();
+  var d = viewDimsCfg();
+  var arOnly = d.aspect_ratio !== null &&
+    d.width === null && d.height === null;
+  if (cfg.responsive && arOnly) {
+    var hostWidth0 = wrap && wrap.clientWidth;
+    el.style.width = (hostWidth0 && dims.width > hostWidth0) ? dims.width + "px" : "100%";
+    el.style.height = dims.height + "px";
+    el.style.flex = "0 0 auto";
+    if (wrap) wrap.style.height = "auto";
+  } else if (cfg.responsive) {
+    // Fill a parent with a definite height (standalone page or a sized knitr
+    // container). In R Markdown the container is usually auto-height, so give
+    // the plot an explicit pixel height instead of collapsing to min-height.
+    var parent = wrap && wrap.parentNode;
+    var parentH = parent ? parent.clientHeight : 0;
+    var parentSized = !!(parent && parent.style && parent.style.height &&
+                         parent.style.height !== "auto");
+    var wc = document.getElementById("htmlwidget_container");
+    var standalone = !!(wc && wc.parentNode === document.body);
+    var heightIsDerived = d.aspect_ratio !== null && d.width !== null;
+    var fill = (standalone || parentSized) && parentH >= 240 &&
+               d.height === null && !heightIsDerived;
+    var hostWidth = wrap && wrap.clientWidth;
+    var needsScroll = !!(hostWidth && dims.width > hostWidth);
+    if (wrap) wrap.style.height = fill ? "100%" : "auto";
+    if (wrap) wrap.style.overflowX = needsScroll ? "auto" : "";
+    el.style.width = (d.width !== null || needsScroll) ? (dims.width + "px") : "100%";
+    if (fill) {
+      el.style.height = "";
+      el.style.flex = "1 1 auto";
+    } else {
+      el.style.height = dims.height + "px";
+      el.style.flex = "0 0 auto";
+    }
+  } else {
+    if (wrap) wrap.style.height = "auto";
+    if (wrap) wrap.style.overflowX = (wrap.clientWidth && dims.width > wrap.clientWidth) ? "auto" : "";
+    el.style.width = dims.width + "px";
+    el.style.height = dims.height + "px";
+    el.style.flex = "0 0 auto";
+  }
+  el.style.minHeight = "240px";
+}
+
+function updateCost(L) {
+  var s = 0;
+  for (var i = 1; i < L.order.length; i++) {
+    var a = traitsCost[L.order[i - 1] - 1];
+    var b = traitsCost[L.order[i] - 1];
+    var d2 = 0;
+    for (var j = 0; j < a.length; j++) { var dd = a[j] - b[j]; d2 += dd * dd; }
+    s += Math.sqrt(d2);
+  }
+  var e = q("cost");
+  if (e) e.textContent = s.toFixed(4);
+}
+
+function updateStatus() {
+  var vis = visibleTipCount();
+  var msg = "Showing " + vis + " of " + n + " tips";
+  if (state.visibleCols.length !== tNames.length) msg += "; " + state.visibleCols.length + " of " + tNames.length + " trait columns";
+  var filters = [];
+  if (state.filter.traitIdx !== null) {
+    filters.push(tNames[state.filter.traitIdx] + " in [" +
+      (state.filter.min === null ? "-Inf" : state.filter.min) + ", " +
+      (state.filter.max === null ? "Inf" : state.filter.max) + "]");
+  }
+  if (state.filter.tips && state.filter.tips.length) filters.push(state.filter.tips.length + " named tips");
+  if (state.clades.length) filters.push(state.clades.length + " clade(s)");
+  if (filters.length) msg += " | filters: " + filters.join(", ");
+  if (state.highlight.traitIdx !== null) msg += " | highlight: " + tNames[state.highlight.traitIdx];
+  var e = q("status");
+  if (e) e.textContent = msg;
+}
+
+function q(role) { return ui ? ui.querySelector('[data-role="' + role + '"]') : null; }
+function qa(role) { return ui ? ui.querySelectorAll('[data-role="' + role + '"]') : []; }
+
+function revForTarget(targetLabels) {
   var tIdx = {};
-  for(var i=0;i<targetLabels.length;i++) tIdx[targetLabels[i]] = i;
-  var base = leafOrder({});
-  var pos = {};
-  base.forEach(function(t){ pos[t] = tIdx[tips[t-1]]; });
-  var mn = {};
-  (function calc(node){
+  for (var i = 0; i < targetLabels.length; i++) tIdx[targetLabels[i]] = i;
+  var base = [];
+  (function dfs(node) {
     var ch = children[node];
-    if(!ch){ mn[node] = pos[node]; return; }
+    if (!ch) { base.push(node * 1); return; }
+    for (var j = 0; j < ch.length; j++) dfs(ch[j]);
+  })(root);
+  var pos = {};
+  base.forEach(function (t) { pos[t] = tIdx[tips[t - 1]]; });
+  var mn = {};
+  (function calc(node) {
+    var ch = children[node];
+    if (!ch) { mn[node] = pos[node]; return; }
     var lo = Infinity;
-    for(var i=0;i<ch.length;i++){ calc(ch[i]); if(mn[ch[i]] < lo) lo = mn[ch[i]]; }
+    for (var j = 0; j < ch.length; j++) { calc(ch[j]); if (mn[ch[j]] < lo) lo = mn[ch[j]]; }
     mn[node] = lo;
   })(root);
   var r = {};
-  (function orient(node){
+  (function orient(node) {
     var ch = children[node];
-    if(!ch) return;
-    if(ch.length === 2) r[node] = mn[ch[1]] < mn[ch[0]];
-    for(var i=0;i<ch.length;i++) orient(ch[i]);
+    if (!ch) return;
+    if (ch.length === 2) r[node] = mn[ch[1]] < mn[ch[0]];
+    for (var j = 0; j < ch.length; j++) orient(ch[j]);
   })(root);
   return r;
 }
 
-function redraw(){
-  var L = layoutCalc(rev);
-  if(viewMode === "trait"){
-    Plotly.react(el, [edgeTrace(L), tipTrace(L, false), intTrace(L),
-                      namesTrace(L), guideTrace(L, traitRange()), valueTrace(L)],
-                 traitLayout());
-  } else {
-    Plotly.react(el, [edgeTrace(L), tipTrace(L), intTrace(L), heatTrace(L)], lay);
+function redraw() {
+  applyContainerSizing();
+  var F = buildFiltered(state.rev);
+  if (!F || leafOrderFiltered(F).length < 1) {
+    state.lastLayout = null;
+    var lay0 = buildLayout({ m: 1 });
+    lay0.annotations.push({ text: "No tips match the current filters.", xref: "paper", yref: "paper",
+      x: 0.5, y: 0.5, showarrow: false, font: { size: 16, color: themeColors().muted } });
+    Plotly.react(el, [], lay0, plotConfig());
+    var e0 = q("cost"); if (e0) e0.textContent = "0.0000";
+    updateStatus();
+    return;
   }
+  var L = layoutCalcFiltered(F);
+  if (cfg.layout === "circular" || cfg.layout === "fan") L = circularLayout(L);
+  state.lastLayout = L;
+  var traces = [];
+  if (Object.keys(L.children).length) traces.push(edgeTrace(L));
+  var tt = tipTraces(L);
+  for (var i = 0; i < tt.length; i++) if (tt[i]) traces.push(tt[i]);
+  var ht = highlightTipTrace(L); if (ht) traces.push(ht);
+  var it = intTrace(L); if (it) traces.push(it);
+  if (state.viewMode === "trait") {
+    traces.push(namesTrace(L));
+    var traitColors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#8c564b", "#e377c2"];
+    for (var vi = 0; vi < state.traitViewCols.length; vi++) {
+      var traitIdx = state.traitViewCols[vi];
+      var axisId = "x" + (3 + vi);
+      traces.push(guideTrace(L, traitRange(traitIdx), axisId));
+      traces.push(valueTrace(L, traitIdx, axisId, traitColors[vi % traitColors.length]));
+    }
+  } else {
+    var hm = heatTrace(L); if (hm) traces.push(hm);
+  }
+  Plotly.react(el, traces, buildLayout(L), plotConfig());
   updateCost(L);
+  updateStatus();
 }
 
-var ui = document.createElement("div");
-ui.style.cssText = "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;padding:6px 2px;line-height:1.7;";
-var html = "<b>Adjacent trait distance:</b> <span style=\"color:#1f77b4;font-weight:700\" id=\"olocostLbl\">0</span>";
-html += "<button id=\"oloresetBtn\" style=\"margin-left:16px\">Reset</button>";
-if(oloOrder){ html += " <button id=\"olobestBtn\" title=\"Apply the OLO-optimal tip order\">Apply OLO-optimal order</button>"; }
-html += " <button id=\"traitViewBtn\" title=\"Toggle the species + trait value panels\">Species + trait panel</button>";
-var opts = "";
-for(var i=0;i<tNames.length;i++){ opts += "<option value=\"" + i + "\">" + tNames[i] + "</option>"; }
-html += " <span id=\"traitSelWrap\" style=\"margin-left:10px;display:none\">trait: <select id=\"traitSel\">" + opts + "</select></span>";
-html += "&nbsp; <span style=\"color:#777\">Click a <b style=\"color:#e08a1e\">diamond</b> (internal node) to flip its two child clades. Hover tips, internal nodes, heatmap cells, or trait dots for details.</span>";
-ui.innerHTML = html;
-el.parentNode.insertBefore(ui, el);
-costEl = document.getElementById("olocostLbl");
-document.getElementById("oloresetBtn").addEventListener("click", function(){ initRev(); redraw(); });
-if(oloOrder){
-  document.getElementById("olobestBtn").addEventListener("click", function(){ rev = revForTarget(oloOrder); redraw(); });
+function syncThemeClass() {
+  if (!ui) return;
+  if (cfg.theme === "dark") ui.classList.add("itv-dark");
+  else ui.classList.remove("itv-dark");
+  var btn = q("theme");
+  if (btn) btn.textContent = (cfg.theme === "dark") ? "Light mode" : "Dark mode";
+  var t = themeColors();
+  if (ui.parentNode) ui.parentNode.style.backgroundColor = t.paper;
 }
-var traitViewBtn = document.getElementById("traitViewBtn");
-var traitSelWrap  = document.getElementById("traitSelWrap");
-var traitSel      = document.getElementById("traitSel");
-traitViewBtn.addEventListener("click", function(){
-  viewMode = (viewMode === "trait") ? "heat" : "trait";
-  traitViewBtn.textContent = (viewMode === "trait") ? "Back to heatmap view" : "Species + trait panel";
-  traitSelWrap.style.display = (viewMode === "trait") ? "inline" : "none";
+
+function syncViewButton() {
+  var b = q("view");
+  if (b) b.textContent = (state.viewMode === "trait") ? "Back to heatmap view" : "Species + trait panel";
+  var picker = q("trait_view_picker");
+  if (picker) picker.style.display = (state.viewMode === "trait") ? "block" : "none";
+}
+
+function markModified() {
+  state.presetValue = "";
+  var sel = q("preset_select");
+  if (sel) sel.value = "";
+}
+
+function setVal(role, val) {
+  var e = q(role);
+  if (!e) return;
+  if (e.type === "checkbox") e.checked = !!val;
+  else if (val === null || val === undefined) e.value = "";
+  else e.value = val;
+}
+
+function syncUI() {
+  setVal("title", cfg.title || "");
+  setVal("subtitle", cfg.subtitle || "");
+  setVal("layout", cfg.layout || "rectangular");
+  setVal("tip_labels", cfg.tip_labels !== false);
+  setVal("tip_label_size", cfg.tip_label_size);
+  setVal("show_internal_nodes", cfg.show_internal_nodes !== false);
+  setVal("internal_node_size", cfg.internal_node_size);
+  setVal("show_internal_node_ids", !!cfg.show_internal_node_ids);
+  setVal("internal_node_id_size", cfg.internal_node_id_size);
+  setVal("tip_node_color", cfg.tip_node_color || "#1f77b4");
+  setVal("tip_node_size", cfg.tip_node_size);
+  setVal("internal_node_color", cfg.internal_node_color || "#e08a1e");
+  setVal("branch_color", cfg.branch_color || "#8a8a8a");
+  setVal("branch_width", cfg.branch_width);
+  setVal("heatmap_colorscale", cfg.heatmap_colorscale || "Viridis");
+  setVal("heatmap_title", cfg.heatmap_title || "Trait");
+  setVal("heatmap_colorbar_title", cfg.heatmap_colorbar_title || "value");
+  setVal("heatmap_panel_title", cfg.heatmap_panel_title || "");
+  setVal("tree_panel_title", cfg.tree_panel_title || "");
+  setVal("species_panel_title", cfg.species_panel_title || "");
+  setVal("trait_panel_title", cfg.trait_panel_title || "");
+  setVal("fan_angle", cfg.fan_angle);
+  setVal("show_heatmap", cfg.show_heatmap !== false);
+  setVal("responsive", cfg.responsive !== false);
+  setVal("width", cfg.width);
+  setVal("height", cfg.height);
+  setVal("aspect_ratio", cfg.aspect_ratio);
+  setVal("heatmap_view_width", cfg.heatmap_view_width);
+  setVal("heatmap_view_height", cfg.heatmap_view_height);
+  setVal("trait_view_width", cfg.trait_view_width);
+  setVal("trait_view_height", cfg.trait_view_height);
+  setVal("auto_fit_subviews", !!cfg.auto_fit_subviews);
+  setVal("heatmap_tree_width", cfg.heatmap_tree_width);
+  setVal("heatmap_panel_width", cfg.heatmap_panel_width);
+  setVal("trait_tree_width", cfg.trait_tree_width);
+  setVal("tips_panel_width", cfg.tips_panel_width);
+  setVal("trait_values_width", cfg.trait_values_width);
+  setVal("heatmap_subview_alignment", cfg.heatmap_subview_alignment || "left");
+  setVal("trait_subview_alignment", cfg.trait_subview_alignment || "left");
+  ["heatmap_tree_width", "heatmap_panel_width", "trait_tree_width",
+    "tips_panel_width", "trait_values_width"].forEach(function (role) {
+      var input = q(role);
+      if (input) input.disabled = !!cfg.auto_fit_subviews;
+    });
+
+  var auto = !(cfg.heatmap_range && cfg.heatmap_range.length === 2);
+  setVal("heatmap_auto", auto);
+  if (!auto) { setVal("heatmap_min", cfg.heatmap_range[0]); setVal("heatmap_max", cfg.heatmap_range[1]); }
+  else { setVal("heatmap_min", ""); setVal("heatmap_max", ""); }
+  var hmin = q("heatmap_min"), hmax = q("heatmap_max");
+  if (hmin) hmin.disabled = auto;
+  if (hmax) hmax.disabled = auto;
+
+  setVal("filter_trait", state.filter.traitIdx === null ? -1 : state.filter.traitIdx);
+  setVal("filter_min", state.filter.min);
+  setVal("filter_max", state.filter.max);
+  setVal("filter_tips", state.filter.tips ? state.filter.tips.join(", ") : "");
+  var ft = q("filter_trait"), fmin = q("filter_min"), fmax = q("filter_max");
+  if (fmin) fmin.disabled = (state.filter.traitIdx === null);
+  if (fmax) fmax.disabled = (state.filter.traitIdx === null);
+  var cl = q("clade");
+  if (cl) for (var i = 0; i < cl.options.length; i++) cl.options[i].selected = state.clades.indexOf(+cl.options[i].value) >= 0;
+
+  setVal("highlight_trait", state.highlight.traitIdx === null ? -1 : state.highlight.traitIdx);
+  setVal("highlight_min", state.highlight.min);
+  setVal("highlight_max", state.highlight.max);
+  setVal("highlight_color", state.highlight.color || "#e41a1c");
+  var hlt = q("highlight_trait"), hlmin = q("highlight_min"), hlmax = q("highlight_max");
+  if (hlmin) hlmin.disabled = (state.highlight.traitIdx === null);
+  if (hlmax) hlmax.disabled = (state.highlight.traitIdx === null);
+
+  syncTraitPicker("heatmap_trait_box", state.visibleCols, "heatmap_trait_count");
+  syncTraitPicker("trait_view_trait_box", state.traitViewCols, "trait_view_trait_count");
+
+  syncThemeClass();
+  syncViewButton();
+  var sel = q("preset_select");
+  if (sel) sel.value = state.presetValue || "";
+  updateStatus();
+}
+
+function refreshCladeOptions() {
+  var sel = q("clade");
+  if (!sel) return;
+  var keys = [];
+  for (var k in children) keys.push(+k);
+  keys.sort(function (a, b) { return a - b; });
+  var h = "";
+  for (var i = 0; i < keys.length; i++) {
+    h += '<option value="' + keys[i] + '">Node ' + keys[i] + " (" + leafCountOriginal(keys[i]) + " tips)</option>";
+  }
+  sel.innerHTML = h;
+}
+
+function syncTraitPicker(boxRole, selected, countRole) {
+  var boxes = qa(boxRole);
+  for (var i = 0; i < boxes.length; i++) boxes[i].checked = selected.indexOf(+boxes[i].value) >= 0;
+  var count = q(countRole);
+  if (count) count.textContent = selected.length === tNames.length ? "(all)" : "(" + selected.length + " selected)";
+}
+
+function refreshTraitSelectors() {
+  var heatmapBox = q("heatmap_trait_options");
+  var valueBox = q("trait_view_trait_options");
+  if (heatmapBox) heatmapBox.innerHTML = "";
+  if (valueBox) valueBox.innerHTML = "";
+  for (var i = 0; i < tNames.length; i++) {
+    (function (idx) {
+      function makeOption(box, role, selected, onChange) {
+        if (!box) return;
+        var lab = document.createElement("label");
+        lab.className = "itv-check";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = idx;
+        cb.setAttribute("data-role", role);
+        cb.checked = selected.indexOf(idx) >= 0;
+        cb.addEventListener("change", onChange);
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(" " + tNames[idx]));
+        box.appendChild(lab);
+      }
+      makeOption(heatmapBox, "heatmap_trait_box", state.visibleCols, function () {
+        state.visibleCols = Array.prototype.map.call(qa("heatmap_trait_box"), function (box) {
+          return box.checked ? +box.value : -1;
+        }).filter(function (value) { return value >= 0; });
+        markModified(); syncUI(); redraw();
+      });
+      makeOption(valueBox, "trait_view_trait_box", state.traitViewCols, function () {
+        state.traitViewCols = Array.prototype.map.call(qa("trait_view_trait_box"), function (box) {
+          return box.checked ? +box.value : -1;
+        }).filter(function (value) { return value >= 0; });
+        markModified(); syncUI(); redraw();
+      });
+    })(i);
+  }
+}
+
+var LS_KEY = "itv_presets_v1";
+var memoryStore = {};
+function readStore() {
+  try {
+    var raw = window.localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return memoryStore; }
+}
+function writeStore(obj) {
+  try { window.localStorage.setItem(LS_KEY, JSON.stringify(obj)); }
+  catch (e) { memoryStore = obj; }
+}
+
+function refreshPresetOptions() {
+  var sel = q("preset_select");
+  if (!sel) return;
+  var h = '<option value="">Custom / modified</option>';
+  var builtins = TD.presets || {};
+  for (var name in builtins) {
+    h += '<option value="builtin:' + esc(name) + '">' + esc(name) + " (built-in)</option>";
+  }
+  var saved = readStore();
+  for (var sname in saved) {
+    h += '<option value="saved:' + esc(sname) + '">' + esc(sname) + " (saved)</option>";
+  }
+  sel.innerHTML = h;
+  sel.value = state.presetValue || "";
+}
+
+function downloadBlob(content, filename, mime) {
+  var blob = new Blob([content], { type: mime });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(url); if (a.parentNode) a.parentNode.removeChild(a); }, 1200);
+}
+
+function nwkLabel(s) {
+  s = String(s);
+  return /[(),:;'\s]/.test(s) ? "'" + s.replace(/'/g, "''") + "'" : s;
+}
+function newickNode(node, revMap) {
+  var ch = children[node];
+  var len = edgeLen[node] ? (":" + edgeLen[node]) : "";
+  if (!ch) return nwkLabel(tips[node - 1]) + len;
+  var ordered = revMap[node] ? ch.slice().reverse() : ch;
+  var kids = ordered.map(function (c) { return newickNode(c, revMap); }).join(",");
+  return "(" + kids + ")" + (node === root ? "" : len);
+}
+function newickString() {
+  return newickNode(root, state.rev) + ";";
+}
+
+function snapshotConfig() {
+  var c = {};
+  for (var k in cfg) c[k] = cfg[k];
+  c.tip_filter = null;
+  if (state.filter.traitIdx !== null || (state.filter.tips && state.filter.tips.length)) {
+    c.tip_filter = {};
+    if (state.filter.traitIdx !== null) {
+      c.tip_filter.trait = tNames[state.filter.traitIdx];
+      c.tip_filter.min = state.filter.min;
+      c.tip_filter.max = state.filter.max;
+    }
+    if (state.filter.tips && state.filter.tips.length) c.tip_filter.tips = state.filter.tips.slice();
+  }
+  c.clade = state.clades.length ? state.clades.slice() : null;
+  c.heatmap_columns = state.visibleCols.map(function (i) { return tNames[i]; });
+  c.trait_view_traits = state.traitViewCols.map(function (i) { return tNames[i]; });
+  c.highlight = null;
+  if (state.highlight.traitIdx !== null || (state.highlight.tips && state.highlight.tips.length)) {
+    c.highlight = { color: state.highlight.color };
+    if (state.highlight.traitIdx !== null) {
+      c.highlight.trait = tNames[state.highlight.traitIdx];
+      c.highlight.min = state.highlight.min;
+      c.highlight.max = state.highlight.max;
+    }
+    if (state.highlight.tips && state.highlight.tips.length) c.highlight.tips = state.highlight.tips.slice();
+  }
+  return c;
+}
+
+function applyConfig(newCfg, resetRotations) {
+  cfg = mergeCfg(DEFAULT_CFG, newCfg || {});
+  if (resetRotations) initRev();
+  initStateFromConfig();
+  syncUI();
   redraw();
-});
-traitSel.addEventListener("change", function(){ traitIdx = +traitSel.value; redraw(); });
+}
 
-el.on("plotly_click", function(data){
+function exportImage(format) {
+  var dims = containerDims();
+  Plotly.downloadImage(el, { format: format, width: dims.width, height: dims.height, filename: "tree_viz" });
+  var e = q("export_status"); if (e) e.textContent = format.toUpperCase() + " export started.";
+}
+
+function exportPDF() {
+  var dims = containerDims();
+  Plotly.toImage(el, { format: "svg", width: dims.width, height: dims.height }).then(function (url) {
+    var w = window.open("", "_blank");
+    if (!w) { var e = q("export_status"); if (e) e.textContent = "Allow pop-ups to print / save as PDF."; return; }
+    w.document.write('<html><head><title>tree_viz</title></head><body style="margin:0">' +
+      '<img src="' + url + '" style="width:100%;height:auto">' +
+      '<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>' +
+      '</body></html>');
+    w.document.close();
+    var e2 = q("export_status"); if (e2) e2.textContent = "Print dialog opened; choose Save as PDF.";
+  }).catch(function () {
+    var e3 = q("export_status"); if (e3) e3.textContent = "PDF export failed in this browser.";
+  });
+}
+
+function exportCSV() {
+  var L = state.lastLayout;
+  if (!L) { var e = q("export_status"); if (e) e.textContent = "Nothing to export."; return; }
+  var cols = state.visibleCols;
+  var lines = ["tip," + cols.map(function (i) { return tNames[i]; }).join(",")];
+  L.order.forEach(function (t) {
+    var row = [tips[t - 1]];
+    for (var j = 0; j < cols.length; j++) row.push(traitsHeat[t - 1][cols[j]]);
+    lines.push(row.join(","));
+  });
+  downloadBlob(lines.join("\n"), "tree_heatmap.csv", "text/csv");
+  var e2 = q("export_status"); if (e2) e2.textContent = "CSV exported.";
+}
+
+function exportNewick() {
+  downloadBlob(newickString(), "tree_viz.tre", "text/plain");
+  var e = q("export_status"); if (e) e.textContent = "Newick tree exported.";
+}
+
+function exportConfig() {
+  downloadBlob(JSON.stringify(snapshotConfig(), null, 2), "tree_viz_config.json", "application/json");
+  var e = q("export_status"); if (e) e.textContent = "Configuration JSON exported.";
+}
+
+function importConfigFile(file) {
+  var reader = new FileReader();
+  reader.onload = function (ev) {
+    try {
+      var obj = JSON.parse(ev.target.result);
+      applyConfig(obj, false);
+      var e = q("export_status"); if (e) e.textContent = "Configuration loaded.";
+    } catch (err) {
+      var e2 = q("export_status"); if (e2) e2.textContent = "Invalid JSON: " + err.message;
+    }
+  };
+  reader.readAsText(file);
+}
+
+function applyPreset() {
+  var sel = q("preset_select");
+  if (!sel || !sel.value) return;
+  var v = sel.value;
+  if (v.indexOf("builtin:") === 0) {
+    var name = v.slice(8);
+    if (TD.presets && TD.presets[name]) {
+      applyConfig(TD.presets[name], false);
+      state.presetValue = v; syncUI();
+      var e = q("preset_status"); if (e) e.textContent = "Applied built-in preset: " + name;
+    }
+  } else if (v.indexOf("saved:") === 0) {
+    var sname = v.slice(6);
+    var saved = readStore();
+    if (saved[sname]) {
+      applyConfig(saved[sname], false);
+      state.presetValue = v; syncUI();
+      var e2 = q("preset_status"); if (e2) e2.textContent = "Applied saved preset: " + sname;
+    }
+  }
+}
+
+function savePreset() {
+  var nameEl = q("preset_name");
+  var name = nameEl ? nameEl.value.trim() : "";
+  if (!name) name = "My preset";
+  if (TD.presets && TD.presets[name]) name = name + " (custom)";
+  var saved = readStore();
+  saved[name] = snapshotConfig();
+  writeStore(saved);
+  state.presetValue = "saved:" + name;
+  refreshPresetOptions();
+  syncUI();
+  var e = q("preset_status"); if (e) e.textContent = "Saved preset: " + name;
+}
+
+function deletePreset() {
+  var sel = q("preset_select");
+  if (!sel || sel.value.indexOf("saved:") !== 0) {
+    var e = q("preset_status"); if (e) e.textContent = "Select a saved preset to delete.";
+    return;
+  }
+  var name = sel.value.slice(6);
+  var saved = readStore();
+  delete saved[name];
+  writeStore(saved);
+  state.presetValue = "";
+  refreshPresetOptions();
+  syncUI();
+  var e2 = q("preset_status"); if (e2) e2.textContent = "Deleted saved preset: " + name;
+}
+
+function restoreDefaults() {
+  cfg = mergeCfg(DEFAULT_CFG, {});
+  state.presetValue = "builtin:default";
+  initRev();
+  initStateFromConfig();
+  refreshPresetOptions();
+  syncUI();
+  redraw();
+  var e = q("preset_status"); if (e) e.textContent = "Restored default settings.";
+}
+
+function setTraitSelection(view, selectAll) {
+  var key = view === "heatmap" ? "visibleCols" : "traitViewCols";
+  state[key] = selectAll ? tNames.map(function (_, i) { return i; }) : [];
+  markModified(); syncUI(); redraw();
+}
+
+function bindEvents() {
+  function on(role, evt, fn) {
+    var e = q(role);
+    if (e) e.addEventListener(evt, fn);
+  }
+  on("reset", "click", function () { initRev(); redraw(); });
+  if (oloOrder) on("olo", "click", function () { state.rev = revForTarget(oloOrder); redraw(); });
+  on("view", "click", function () {
+    state.viewMode = (state.viewMode === "trait") ? "heat" : "trait";
+    syncViewButton(); redraw();
+  });
+  on("heatmap_traits_all", "click", function () { setTraitSelection("heatmap", true); });
+  on("heatmap_traits_clear", "click", function () { setTraitSelection("heatmap", false); });
+  on("trait_view_traits_all", "click", function () { setTraitSelection("trait", true); });
+  on("trait_view_traits_clear", "click", function () { setTraitSelection("trait", false); });
+  on("theme", "click", function () {
+    cfg.theme = (cfg.theme === "dark") ? "light" : "dark";
+    markModified(); syncThemeClass(); redraw();
+  });
+
+  on("title", "change", function () { cfg.title = this.value; markModified(); redraw(); });
+  on("subtitle", "change", function () { cfg.subtitle = this.value; markModified(); redraw(); });
+  on("layout", "change", function () { cfg.layout = this.value; markModified(); redraw(); });
+  on("tip_labels", "change", function () { cfg.tip_labels = this.checked; markModified(); redraw(); });
+  on("tip_label_size", "change", function () { cfg.tip_label_size = numOrNull(this.value); markModified(); redraw(); });
+  on("show_internal_nodes", "change", function () { cfg.show_internal_nodes = this.checked; markModified(); redraw(); });
+  on("internal_node_size", "change", function () { cfg.internal_node_size = numOrNull(this.value); markModified(); redraw(); });
+  on("show_internal_node_ids", "change", function () { cfg.show_internal_node_ids = this.checked; markModified(); redraw(); });
+  on("internal_node_id_size", "change", function () { cfg.internal_node_id_size = numOrNull(this.value); markModified(); redraw(); });
+  on("tip_node_color", "change", function () { cfg.tip_node_color = this.value; markModified(); redraw(); });
+  on("tip_node_size", "change", function () { cfg.tip_node_size = numOrNull(this.value); markModified(); redraw(); });
+  on("internal_node_color", "change", function () { cfg.internal_node_color = this.value; markModified(); redraw(); });
+  on("branch_color", "change", function () { cfg.branch_color = this.value; markModified(); redraw(); });
+  on("branch_width", "change", function () { cfg.branch_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_colorscale", "change", function () { cfg.heatmap_colorscale = this.value; markModified(); redraw(); });
+  on("heatmap_title", "change", function () { cfg.heatmap_title = this.value; markModified(); redraw(); });
+  on("heatmap_colorbar_title", "change", function () { cfg.heatmap_colorbar_title = this.value; markModified(); redraw(); });
+  on("heatmap_panel_title", "change", function () { cfg.heatmap_panel_title = this.value; markModified(); redraw(); });
+  on("tree_panel_title", "change", function () { cfg.tree_panel_title = this.value; markModified(); redraw(); });
+  on("species_panel_title", "change", function () { cfg.species_panel_title = this.value; markModified(); redraw(); });
+  on("trait_panel_title", "change", function () { cfg.trait_panel_title = this.value; markModified(); redraw(); });
+  on("fan_angle", "change", function () { cfg.fan_angle = numOrNull(this.value); markModified(); redraw(); });
+  on("show_heatmap", "change", function () { cfg.show_heatmap = this.checked; markModified(); redraw(); });
+  on("responsive", "change", function () { cfg.responsive = this.checked; markModified(); applyContainerSizing(); redraw(); });
+  on("width", "change", function () { cfg.width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("height", "change", function () { cfg.height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("aspect_ratio", "change", function () { cfg.aspect_ratio = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_width", "change", function () { cfg.heatmap_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("heatmap_view_height", "change", function () { cfg.heatmap_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_width", "change", function () { cfg.trait_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("trait_view_height", "change", function () { cfg.trait_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("auto_fit_subviews", "change", function () {
+    cfg.auto_fit_subviews = this.checked;
+    markModified(); syncUI(); redraw();
+  });
+  on("heatmap_tree_width", "change", function () { cfg.heatmap_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_panel_width", "change", function () { cfg.heatmap_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_tree_width", "change", function () { cfg.trait_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("tips_panel_width", "change", function () { cfg.tips_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_values_width", "change", function () { cfg.trait_values_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_subview_alignment", "change", function () { cfg.heatmap_subview_alignment = this.value; markModified(); redraw(); });
+  on("trait_subview_alignment", "change", function () { cfg.trait_subview_alignment = this.value; markModified(); redraw(); });
+  on("heatmap_auto", "change", function () {
+    if (this.checked) cfg.heatmap_range = null;
+    else {
+      var lo = numOrNull(q("heatmap_min") ? q("heatmap_min").value : null);
+      var hi = numOrNull(q("heatmap_max") ? q("heatmap_max").value : null);
+      cfg.heatmap_range = (lo !== null && hi !== null) ? [lo, hi] : null;
+    }
+    markModified(); syncUI(); redraw();
+  });
+  on("heatmap_min", "change", function () {
+    if (q("heatmap_auto") && q("heatmap_auto").checked) return;
+    var lo = numOrNull(this.value), hi = numOrNull(q("heatmap_max") ? q("heatmap_max").value : null);
+    cfg.heatmap_range = (lo !== null && hi !== null) ? [lo, hi] : null;
+    markModified(); redraw();
+  });
+  on("heatmap_max", "change", function () {
+    if (q("heatmap_auto") && q("heatmap_auto").checked) return;
+    var lo = numOrNull(q("heatmap_min") ? q("heatmap_min").value : null), hi = numOrNull(this.value);
+    cfg.heatmap_range = (lo !== null && hi !== null) ? [lo, hi] : null;
+    markModified(); redraw();
+  });
+
+  on("filter_trait", "change", function () {
+    var v = +this.value;
+    state.filter.traitIdx = (v >= 0) ? v : null;
+    markModified(); syncUI(); recomputeVisibility(); redraw();
+  });
+  on("filter_min", "change", function () {
+    state.filter.min = numOrNull(this.value); markModified(); recomputeVisibility(); redraw();
+  });
+  on("filter_max", "change", function () {
+    state.filter.max = numOrNull(this.value); markModified(); recomputeVisibility(); redraw();
+  });
+  on("filter_tips", "change", function () {
+    var arr = this.value.split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+    state.filter.tips = arr.length ? arr : null;
+    markModified(); recomputeVisibility(); redraw();
+  });
+  on("clade", "change", function () {
+    var sel = this, ids = [];
+    for (var i = 0; i < sel.options.length; i++) if (sel.options[i].selected) ids.push(+sel.options[i].value);
+    state.clades = ids;
+    markModified(); recomputeVisibility(); redraw();
+  });
+  on("clear_filters", "click", function () {
+    state.filter = { traitIdx: null, min: null, max: null, tips: null };
+    state.clades = [];
+    markModified(); syncUI(); recomputeVisibility(); redraw();
+  });
+  on("highlight_trait", "change", function () {
+    var v = +this.value;
+    state.highlight.traitIdx = (v >= 0) ? v : null;
+    markModified(); syncUI(); matchCache = {}; redraw();
+  });
+  on("highlight_min", "change", function () {
+    state.highlight.min = numOrNull(this.value); markModified(); matchCache = {}; redraw();
+  });
+  on("highlight_max", "change", function () {
+    state.highlight.max = numOrNull(this.value); markModified(); matchCache = {}; redraw();
+  });
+  on("highlight_color", "change", function () {
+    state.highlight.color = this.value; markModified(); redraw();
+  });
+  on("clear_highlight", "click", function () {
+    state.highlight = { traitIdx: null, min: null, max: null, tips: null, color: "#e41a1c" };
+    markModified(); syncUI(); matchCache = {}; redraw();
+  });
+
+  on("export_png", "click", function () { exportImage("png"); });
+  on("export_svg", "click", function () { exportImage("svg"); });
+  on("export_pdf", "click", exportPDF);
+  on("export_newick", "click", exportNewick);
+  on("export_csv", "click", exportCSV);
+  on("export_config", "click", exportConfig);
+  on("import_config", "change", function () { if (this.files && this.files[0]) importConfigFile(this.files[0]); });
+  on("preset_apply", "click", applyPreset);
+  on("preset_save", "click", savePreset);
+  on("preset_delete", "click", deletePreset);
+  on("preset_restore", "click", restoreDefaults);
+}
+
+// ---------------------------------------------------------------------------
+// Build the control panel and start the widget
+// ---------------------------------------------------------------------------
+initRev();
+initStateFromConfig();
+
+var styleEl = document.createElement("style");
+styleEl.textContent = [
+  ".itv-wrap{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;box-sizing:border-box;overflow-x:auto;}",
+  ".itv-ui{--itv-bg:#f7f7f7;--itv-fg:#222;--itv-border:#ddd;--itv-input:#fff;--itv-accent:#1f77b4;--itv-muted:#666;",
+  "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:var(--itv-fg);",
+  "background:var(--itv-bg);border:1px solid var(--itv-border);border-radius:6px;padding:6px 8px;margin:0 0 6px 0;box-sizing:border-box;flex:0 0 auto;}",
+  ".itv-ui.itv-dark{--itv-bg:#171b21;--itv-fg:#e8e8e8;--itv-border:#2f363f;--itv-input:#0f1115;--itv-accent:#4da3ff;--itv-muted:#a8b0b8;}",
+  ".itv-ui button{font:inherit;padding:2px 8px;margin:0 2px 0 0;border:1px solid var(--itv-border);border-radius:4px;background:var(--itv-input);color:var(--itv-fg);cursor:pointer;}",
+  ".itv-ui button:hover{border-color:var(--itv-accent);}",
+  ".itv-ui input,.itv-ui select{font:inherit;color:var(--itv-fg);background:var(--itv-input);border:1px solid var(--itv-border);border-radius:4px;padding:1px 4px;box-sizing:border-box;}",
+  ".itv-ui input[type=text],.itv-ui input[type=number]{width:100%;min-width:90px;}",
+  ".itv-ui input[type=color]{width:42px;height:24px;padding:0;}",
+  ".itv-ui details{margin:4px 0;}",
+  ".itv-ui summary{cursor:pointer;font-weight:600;padding:2px 0;}",
+  ".itv-ui .itv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 12px;padding:4px 0;}",
+  ".itv-ui .itv-grid label{display:flex;align-items:center;gap:5px;min-width:0;}",
+  ".itv-ui .itv-grid label input[type=text],.itv-ui .itv-grid label input[type=number]{flex:1 1 auto;}",
+  ".itv-ui .itv-wide{grid-column:1/-1;}",
+  ".itv-ui .itv-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;}",
+  ".itv-ui .itv-trait-dropdown{position:relative;}",
+  ".itv-ui .itv-trait-dropdown>summary{display:inline-block;list-style:none;border:1px solid var(--itv-border);border-radius:4px;padding:2px 7px;background:var(--itv-input);font-weight:400;white-space:nowrap;}",
+  ".itv-ui .itv-trait-dropdown>summary::-webkit-details-marker{display:none;}",
+  ".itv-ui .itv-trait-menu{position:absolute;z-index:20;top:100%;left:0;min-width:190px;max-height:260px;overflow:auto;padding:7px;background:var(--itv-bg);border:1px solid var(--itv-border);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.18);}",
+  ".itv-ui .itv-trait-options{display:flex;flex-direction:column;gap:3px;}",
+  ".itv-ui .itv-trait-options .itv-check{display:flex;align-items:center;gap:6px;padding:2px 3px;}",
+  ".itv-ui .itv-trait-actions{display:flex;gap:4px;margin-top:6px;padding-top:5px;border-top:1px solid var(--itv-border);}",
+  ".itv-ui .itv-status{color:var(--itv-muted);font-size:12px;margin-left:4px;}",
+  ".itv-ui .itv-hint{color:var(--itv-muted);font-size:12px;margin-top:4px;}",
+  ".itv-ui .itv-checks{display:flex;flex-wrap:wrap;gap:3px 10px;}",
+  ".itv-ui .itv-check{display:inline-flex;align-items:center;gap:3px;font-size:12px;}",
+  ".itv-ui .itv-subhead{font-weight:600;margin:2px 0;}",
+  ".itv-ui .itv-actions{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;}",
+  ".itv-ui .itv-file{display:inline-flex;align-items:center;gap:4px;font-size:12px;}"
+].join("");
+
+var h = [];
+h.push('<div class="itv-toolbar">');
+h.push('<span><b>Adjacent trait distance' + (costScaled ? " (scaled)" : "") + ':</b> <span data-role="cost">0</span></span>');
+h.push('<button type="button" data-role="reset">Reset rotations</button>');
+if (oloOrder) h.push('<button type="button" data-role="olo">Apply OLO-optimal order</button>');
+h.push('<button type="button" data-role="view">Species + trait panel</button>');
+h.push('<details class="itv-trait-dropdown"><summary>Heatmap traits <span data-role="heatmap_trait_count"></span></summary><div class="itv-trait-menu"><div class="itv-trait-options" data-role="heatmap_trait_options"></div><div class="itv-trait-actions"><button type="button" data-role="heatmap_traits_all">All</button><button type="button" data-role="heatmap_traits_clear">Clear</button></div></div></details>');
+h.push('<details class="itv-trait-dropdown" data-role="trait_view_picker" style="display:none"><summary>Trait values <span data-role="trait_view_trait_count"></span></summary><div class="itv-trait-menu"><div class="itv-trait-options" data-role="trait_view_trait_options"></div><div class="itv-trait-actions"><button type="button" data-role="trait_view_traits_all">All</button><button type="button" data-role="trait_view_traits_clear">Clear</button></div></div></details>');
+h.push('<button type="button" data-role="theme">Dark mode</button>');
+h.push('<span class="itv-status" data-role="status"></span>');
+h.push('</div>');
+
+var traitOpts = "";
+for (var ti = 0; ti < tNames.length; ti++) traitOpts += '<option value="' + ti + '">' + esc(tNames[ti]) + "</option>";
+var scaleNames = ["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "Bluered", "RdBu", "RdYlBu", "RdYlGn", "Earth", "Portland", "Jet", "Hot", "Greys", "YlGnBu", "YlOrRd", "Picnic", "Rainbow", "Blackbody", "Electric", "Twilight", "Ice"];
+var scaleOpts = "";
+for (var si = 0; si < scaleNames.length; si++) scaleOpts += '<option value="' + scaleNames[si] + '">' + scaleNames[si] + "</option>";
+
+h.push('<details><summary>Appearance &amp; titles</summary><div class="itv-grid">');
+h.push('<label>Title<input type="text" data-role="title"></label>');
+h.push('<label>Subtitle<input type="text" data-role="subtitle"></label>');
+h.push('<label>Layout<select data-role="layout"><option value="rectangular">Rectangular</option><option value="slanted">Slanted</option><option value="circular">Circular</option><option value="fan">Fan</option></select></label>');
+h.push('<label>Tree tip labels<input type="checkbox" data-role="tip_labels"></label>');
+h.push('<label>Tip label size<input type="number" min="1" step="0.5" data-role="tip_label_size"></label>');
+h.push('<label>Show internal nodes<input type="checkbox" data-role="show_internal_nodes"></label>');
+h.push('<label>Internal node size<input type="number" min="1" step="0.5" data-role="internal_node_size"></label>');
+h.push('<label>Show internal node IDs<input type="checkbox" data-role="show_internal_node_ids"></label>');
+h.push('<label>Node ID font size<input type="number" min="1" step="0.5" data-role="internal_node_id_size"></label>');
+h.push('<label>Tip node color<input type="color" data-role="tip_node_color"></label>');
+h.push('<label>Tip node size<input type="number" min="1" step="0.5" data-role="tip_node_size"></label>');
+h.push('<label>Internal node color<input type="color" data-role="internal_node_color"></label>');
+h.push('<label>Branch color<input type="color" data-role="branch_color"></label>');
+h.push('<label>Branch width<input type="number" min="0.1" step="0.1" data-role="branch_width"></label>');
+h.push('<label>Heatmap colorscale<select data-role="heatmap_colorscale">' + scaleOpts + '</select></label>');
+h.push('<label>Heatmap auto range<input type="checkbox" data-role="heatmap_auto"></label>');
+h.push('<label>Heatmap min<input type="number" step="any" data-role="heatmap_min"></label>');
+h.push('<label>Heatmap max<input type="number" step="any" data-role="heatmap_max"></label>');
+h.push('<label>Heatmap axis title<input type="text" data-role="heatmap_title"></label>');
+h.push('<label>Colorbar title<input type="text" data-role="heatmap_colorbar_title"></label>');
+h.push('<label>Heatmap panel title<input type="text" data-role="heatmap_panel_title"></label>');
+h.push('<label>Tree panel title<input type="text" data-role="tree_panel_title"></label>');
+h.push('<label>Species panel title<input type="text" data-role="species_panel_title"></label>');
+h.push('<label>Trait panel title<input type="text" data-role="trait_panel_title" placeholder="auto: trait name + value"></label>');
+h.push('<label>Fan angle (deg)<input type="number" min="10" max="360" step="1" data-role="fan_angle"></label>');
+h.push('<label>Show heatmap<input type="checkbox" data-role="show_heatmap"></label>');
+h.push('</div></details>');
+h.push('<details><summary>View sizing &amp; subviews</summary><div class="itv-grid">');
+h.push('<div class="itv-wide itv-subhead">View sizing (blank = default)</div>');
+h.push('<label>Heatmap view width (px)<input type="number" min="320" step="10" data-role="heatmap_view_width"></label>');
+h.push('<label>Heatmap view height (px)<input type="number" min="240" step="10" data-role="heatmap_view_height"></label>');
+h.push('<label>Species + trait view width (px)<input type="number" min="320" step="10" data-role="trait_view_width"></label>');
+h.push('<label>Species + trait view height (px)<input type="number" min="240" step="10" data-role="trait_view_height"></label>');
+h.push('<label>Default width (px)<input type="number" min="320" step="10" data-role="width"></label>');
+h.push('<label>Default height (px)<input type="number" min="240" step="10" data-role="height"></label>');
+h.push('<label>Aspect ratio (w/h)<input type="number" min="0.1" step="0.01" data-role="aspect_ratio"></label>');
+h.push('<label>Responsive fill<input type="checkbox" data-role="responsive"></label>');
+h.push('<div class="itv-wide itv-subhead">Subviews</div>');
+h.push('<label>Auto-fit subview widths<input type="checkbox" data-role="auto_fit_subviews"></label>');
+h.push('<label>Heatmap panel group alignment<select data-role="heatmap_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Tree panel width (px)<input type="number" min="100" step="10" data-role="heatmap_tree_width"></label>');
+h.push('<label>Heatmap panel width (px)<input type="number" min="100" step="10" data-role="heatmap_panel_width"></label>');
+h.push('<label>Species + trait panel group alignment<select data-role="trait_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Species + trait tree width (px)<input type="number" min="100" step="10" data-role="trait_tree_width"></label>');
+h.push('<label>Tips panel width (px)<input type="number" min="60" step="10" data-role="tips_panel_width"></label>');
+h.push('<label>Trait values panel width (px)<input type="number" min="100" step="10" data-role="trait_values_width"></label>');
+h.push('<div class="itv-wide itv-hint">Auto-fit measures the species labels, reserves room for tree labels, and fits the main chart panel. The Species + trait view uses its dedicated tips panel instead of duplicate tree labels. Panel heights follow the view height to keep tip rows aligned.</div>');
+h.push('</div></details>');
+
+h.push('<details><summary>Filtering &amp; highlighting</summary><div class="itv-grid">');
+h.push('<label>Trait filter<select data-role="filter_trait"><option value="-1">(none)</option>' + traitOpts + '</select></label>');
+h.push('<label>Min<input type="number" step="any" data-role="filter_min"></label>');
+h.push('<label>Max<input type="number" step="any" data-role="filter_max"></label>');
+h.push('<label>Tip names (comma separated)<input type="text" data-role="filter_tips" placeholder="blank = all tips"></label>');
+h.push('<label class="itv-wide">Clade filter (Ctrl/Cmd-click for multiple; none = all)<select multiple size="5" data-role="clade"></select></label>');
+h.push('<div class="itv-wide itv-hint">Use the Heatmap traits and Trait values multi-select dropdowns in the toolbar to choose the columns and value panels. Each selected value trait gets its own scale.</div>');
+h.push('<label>Highlight trait<select data-role="highlight_trait"><option value="-1">(none)</option>' + traitOpts + '</select></label>');
+h.push('<label>Highlight min<input type="number" step="any" data-role="highlight_min"></label>');
+h.push('<label>Highlight max<input type="number" step="any" data-role="highlight_max"></label>');
+h.push('<label>Highlight color<input type="color" data-role="highlight_color"></label>');
+h.push('<div class="itv-wide itv-actions"><button type="button" data-role="clear_filters">Clear filters</button><button type="button" data-role="clear_highlight">Clear highlight</button></div>');
+h.push('</div></details>');
+
+h.push('<details><summary>Export</summary><div class="itv-actions">');
+h.push('<button type="button" data-role="export_png">PNG</button>');
+h.push('<button type="button" data-role="export_svg">SVG</button>');
+h.push('<button type="button" data-role="export_pdf">PDF (print)</button>');
+h.push('<button type="button" data-role="export_newick">Tree (Newick)</button>');
+h.push('<button type="button" data-role="export_csv">Heatmap CSV</button>');
+h.push('<button type="button" data-role="export_config">Configuration JSON</button>');
+h.push('<label class="itv-file">Load configuration JSON<input type="file" accept=".json,application/json" data-role="import_config"></label>');
+h.push('<span class="itv-status" data-role="export_status"></span>');
+h.push('</div></details>');
+
+h.push('<details><summary>Presets &amp; settings</summary><div class="itv-grid">');
+h.push('<label>Preset<select data-role="preset_select"></select></label>');
+h.push('<label>Preset name<input type="text" data-role="preset_name" placeholder="My preset"></label>');
+h.push('<div class="itv-wide itv-actions"><button type="button" data-role="preset_apply">Apply preset</button><button type="button" data-role="preset_save">Save current as preset</button><button type="button" data-role="preset_delete">Delete saved preset</button><button type="button" data-role="preset_restore">Restore defaults</button><span class="itv-status" data-role="preset_status"></span></div>');
+h.push('</div></details>');
+h.push('<div class="itv-hint">Click an internal-node diamond to flip its child clades. Hover tips, nodes, heatmap cells, or trait dots for details.</div>');
+
+ui = document.createElement("div");
+ui.className = "itv-ui";
+ui.innerHTML = h.join("");
+
+var wrap = document.createElement("div");
+wrap.className = "itv-wrap";
+el.parentNode.insertBefore(wrap, el);
+wrap.appendChild(ui);
+wrap.appendChild(el);
+document.head.appendChild(styleEl);
+
+// In a standalone htmlwidgets page the container has no explicit height, so a
+// "100%" responsive fill collapses. Give it the viewport height there only
+// (never inside an R Markdown document, where knitr controls the size).
+var widgetContainer = document.getElementById("htmlwidget_container");
+if (widgetContainer && widgetContainer.parentNode === document.body) {
+  document.documentElement.style.height = "100%";
+  document.body.style.height = "100%";
+  document.body.style.margin = "0";
+  widgetContainer.style.height = "100%";
+}
+
+refreshCladeOptions();
+refreshTraitSelectors();
+refreshPresetOptions();
+syncUI();
+bindEvents();
+applyContainerSizing();
+redraw();
+
+window.addEventListener("resize", function () {
+  if (cfg.responsive) {
+    applyContainerSizing();
+    Plotly.Plots.resize(el);
+  }
+});
+
+el.on("plotly_click", function (data) {
   var pts = data.points || [];
-  for(var i=0;i<pts.length;i++){
+  for (var i = 0; i < pts.length; i++) {
     var p = pts[i];
-    if(p.curveNumber === 2 && p.customdata !== undefined){
+    if (p.data && p.data.meta === "internal" && p.customdata !== undefined) {
       var node = p.customdata;
-      rev[node] = !rev[node];
+      state.rev[node] = !state.rev[node];
       redraw();
       return;
     }
   }
 });
-
-redraw();
-)-"
-
-js_full <- gsub("__PAYLOAD__", payload_json, .js_body, fixed = TRUE)
+)---"
+  js_full <- gsub("__PAYLOAD__", payload_json, js_body, fixed = TRUE)
 
   fig <- suppressWarnings(suppressMessages(plotly::plot_ly()))
   widget <- suppressWarnings(suppressMessages(
     htmlwidgets::onRender(fig, paste0("function(el, x) {\n", js_full, "\n}"))
   ))
+
+  # ----- responsive / fixed / aspect-ratio sizing -----
+  # The widget JS sizes the plot div inside a flex column (control panel on
+  # top, plot filling the rest). Each view (heatmap vs species+trait) can have
+  # its own width/height; the initial view is the heatmap view.
+  initial_width  <- .itv_or(cfg$heatmap_view_width, cfg$width)
+  initial_height <- .itv_or(cfg$heatmap_view_height, cfg$height)
+  if (!is.null(cfg$aspect_ratio)) {
+    if (!is.null(initial_width) && is.null(initial_height))
+      initial_height <- initial_width / cfg$aspect_ratio
+    if (is.null(initial_width) && !is.null(initial_height))
+      initial_width <- initial_height * cfg$aspect_ratio
+  }
+  widget$width <- .itv_or(initial_width, "100%")
+  widget$height <- .itv_or(initial_height, "100%")
+
   suppressWarnings(suppressMessages(
     htmlwidgets::saveWidget(widget, output_file, selfcontained = selfcontained)
   ))
@@ -553,13 +2327,76 @@ js_full <- gsub("__PAYLOAD__", payload_json, .js_body, fixed = TRUE)
   cat("Saved interactive tree visualization to:", output_file, "\n")
 
   invisible(list(
-    tree  = tree,
-    order = leaf_order_2(tree),
-    cost  = out_cost,
-    olo   = olo_order,
-    file  = output_file,
-    widget = widget
+    tree         = tree,
+    order        = leaf_order_2(tree),
+    cost         = out_cost,
+    olo          = olo_order,
+    file         = output_file,
+    widget       = widget,
+    config       = cfg,
+    heatmap      = traits,
+    heatmap_order = traits[leaf_order_2(tree), , drop = FALSE],
+    newick       = save_newick,
+    heatmap_csv  = save_heatmap_csv,
+    config_json  = save_config
   ))
+}
+
+# -----------------------------------------------------------------------------
+# Export helpers
+# -----------------------------------------------------------------------------
+export_tree_viz_data <- function(result, dir = ".", prefix = "tree_viz") {
+  if (!is.list(result) || is.null(result$tree))
+    stop("'result' must be the object returned by interactive_tree_viz().", call. = FALSE)
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  tre <- file.path(dir, paste0(prefix, ".tre"))
+  csv <- file.path(dir, paste0(prefix, "_heatmap.csv"))
+  cfg <- file.path(dir, paste0(prefix, "_config.json"))
+  ape::write.tree(result$tree, file = tre)
+  hm <- result$heatmap_order
+  hm <- data.frame(tip = rownames(hm), hm, check.names = FALSE, stringsAsFactors = FALSE)
+  utils::write.csv(hm, csv, row.names = FALSE)
+  save_tree_viz_config(result$config, cfg)
+  invisible(c(tree = tre, heatmap_csv = csv, config_json = cfg))
+}
+
+export_tree_viz_image <- function(html_file, output_file,
+                                  format = c("png", "pdf", "svg"),
+                                  width = 1200, height = 800, delay = 2) {
+  format <- match.arg(format)
+  if (!file.exists(html_file)) stop("HTML file not found: ", html_file, call. = FALSE)
+  url <- paste0("file:///", normalizePath(html_file, winslash = "/", mustWork = TRUE))
+  if (requireNamespace("webshot2", quietly = TRUE)) {
+    if (format == "svg")
+      stop("webshot2 cannot export SVG; use format = 'png' or 'pdf'.", call. = FALSE)
+    webshot2::webshot(url, file = output_file, vwidth = width, vheight = height,
+                      delay = delay, zoom = 1, selector = ".js-plotly-plot")
+    return(invisible(output_file))
+  }
+  if (!requireNamespace("chromote", quietly = TRUE))
+    stop("Install 'webshot2' (recommended) or 'chromote' to export images.", call. = FALSE)
+  b <- chromote::ChromoteSession$new()
+  on.exit(b$close(), add = TRUE)
+  b$set_viewport_size(width, height)
+  b$Page$navigate(url)
+  b$Page$loadEventFired()
+  Sys.sleep(delay)
+  if (format == "pdf") {
+    b$Page$printToPDF(landscape = width > height, printBackground = TRUE,
+                      paperWidth = width / 96, paperHeight = height / 96,
+                      marginTop = 0, marginBottom = 0, marginLeft = 0, marginRight = 0,
+                      out = output_file)
+  } else if (format == "png") {
+    b$screenshot(output_file, cliprect = list(x = 0, y = 0, width = width, height = height, scale = 1))
+  } else {
+    js <- sprintf("(function(){var el=document.querySelector('.js-plotly-plot');return Plotly.toImage(el,{format:'svg',width:%d,height:%d});})()",
+                  width, height)
+    res <- b$Runtime$evaluate(expression = js, awaitPromise = TRUE, returnByValue = TRUE)
+    data_url <- res$result$value
+    svg <- rawToChar(jsonlite::base64_dec(sub("^data:image/svg\\+xml;base64,", "", data_url)))
+    writeLines(svg, output_file, useBytes = TRUE)
+  }
+  invisible(output_file)
 }
 
 # -----------------------------------------------------------------------------
