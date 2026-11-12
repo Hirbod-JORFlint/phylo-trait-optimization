@@ -10,7 +10,8 @@ res <- interactive_tree_viz(tr, Td, reorder_olo = TRUE,
   output_file = "dev/tmp/test_default.html",
   config = tree_viz_config(
     heatmap_view_width = 1100, heatmap_view_height = 720,
-    trait_view_width = 900, trait_view_height = 620
+    trait_view_width = 900, trait_view_height = 620,
+    auto_fit_subviews = TRUE, trait_subview_alignment = "center"
   ),
   save_newick = "dev/tmp/test_default.tre",
   save_heatmap_csv = "dev/tmp/test_default.csv",
@@ -21,5 +22,7 @@ cat("config:", res$config$layout, res$config$theme, "\n")
 stopifnot(res$config$heatmap_view_width == 1100,
           res$config$heatmap_view_height == 720,
           res$config$trait_view_width == 900,
-          res$config$trait_view_height == 620)
+          res$config$trait_view_height == 620,
+          isTRUE(res$config$auto_fit_subviews),
+          res$config$trait_subview_alignment == "center")
 stopifnot(res$widget$width == 1100, res$widget$height == 720)

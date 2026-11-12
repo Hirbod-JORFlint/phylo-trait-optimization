@@ -10,10 +10,13 @@ Td <- matrix(runif(12 * 4), 12, 4,
 cfg <- tree_viz_config(layout = "fan", title = "Helper test",
                        tip_filter = list(trait = "Q1", min = 0.2, max = 0.8),
                        highlight = list(trait = "Q2", min = 0.5, color = "#ff0000"),
-                       heatmap_columns = c("Q1", "Q3"),
-                       clade = 13:14,
-                       heatmap_view_width = 1100, heatmap_view_height = 720,
-                       trait_view_width = 900, trait_view_height = 620)
+                        heatmap_columns = c("Q1", "Q3"),
+                        clade = 13:14,
+                        heatmap_view_width = 1100, heatmap_view_height = 720,
+                        trait_view_width = 900, trait_view_height = 620,
+                        heatmap_tree_width = 380, tips_panel_width = 100,
+                        heatmap_subview_alignment = "center",
+                        trait_subview_alignment = "right")
 stopifnot(cfg$layout == "fan", cfg$title == "Helper test")
 
 p <- tree_viz_preset("dark", title = "Dark preset")
@@ -23,10 +26,14 @@ save_tree_viz_config(p, "dev/tmp/helper_cfg.json")
 p2 <- load_tree_viz_config("dev/tmp/helper_cfg.json")
 stopifnot(p2$theme == "dark", p2$title == "Dark preset")
 
-p3 <- tree_viz_config(heatmap_view_width = 1200, trait_view_height = 600)
+p3 <- tree_viz_config(heatmap_view_width = 1200, trait_view_height = 600,
+                      auto_fit_subviews = TRUE, heatmap_panel_width = 500,
+                      trait_subview_alignment = "center")
 save_tree_viz_config(p3, "dev/tmp/helper_cfg2.json")
 p4 <- load_tree_viz_config("dev/tmp/helper_cfg2.json")
-stopifnot(p4$heatmap_view_width == 1200, p4$trait_view_height == 600)
+stopifnot(p4$heatmap_view_width == 1200, p4$trait_view_height == 600,
+          isTRUE(p4$auto_fit_subviews), p4$heatmap_panel_width == 500,
+          p4$trait_subview_alignment == "center")
 
 res <- interactive_tree_viz(
   tr, Td, reorder_olo = FALSE, output_file = "dev/tmp/helper_widget.html",
@@ -44,7 +51,11 @@ stopifnot(identical(res$config$heatmap_columns, c("Q1", "Q3")))
 stopifnot(res$config$heatmap_view_width == 1100,
           res$config$heatmap_view_height == 720,
           res$config$trait_view_width == 900,
-          res$config$trait_view_height == 620)
+          res$config$trait_view_height == 620,
+          res$config$heatmap_tree_width == 380,
+          res$config$tips_panel_width == 100,
+          res$config$heatmap_subview_alignment == "center",
+          res$config$trait_subview_alignment == "right")
 
 out <- export_tree_viz_data(res, dir = "dev/tmp/helper_out", prefix = "demo")
 stopifnot(all(file.exists(out)))

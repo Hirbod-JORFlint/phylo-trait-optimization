@@ -383,6 +383,7 @@ The static panels above are useful, but it is hard to explore the interplay betw
 - rectangular, slanted, circular and fan tree layouts, with an aligned trait heatmap or a species/trait-value panel;
 - customizable titles, tip labels, internal-node IDs, node/branch colours and sizes, heatmap colours/range and light/dark themes;
 - responsive fill, fixed dimensions or aspect-ratio sizing, with separate width/height for the heatmap and species+trait views;
+- configurable widths and left/center/right alignment for each view's subpanels (tree, heatmap, tips and trait values), with optional content-aware auto-fit;
 - filtering by trait range, clade or selected heatmap columns, plus highlighting of matching tips and clades;
 - **click any internal-node diamond to flip (rotate) its two child clades**, which reorders only the leaves, preserving the topology exactly;
 - an embedded **OLO (Bar-Joseph et al. 2001) optimal leaf ordering**, computed with tree-constrained rotations, plus *Reset* and *Apply OLO-optimal order* buttons;
@@ -426,7 +427,7 @@ py_install('plotly')
 #   - Click an internal-node diamond to flip its child clades (topology safe)
 #   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering
 #   - Second view: tree + species names + values of a selected trait
-#   - Appearance, titles, per-view sizing, filtering, highlighting, dark/light mode
+#   - Appearance, titles, per-view/subview sizing and alignment, filtering, highlighting, dark/light mode
 #   - Export PNG / SVG / PDF (print), Newick, heatmap CSV and config JSON
 #   - Built-in and user-saved configuration presets
 # =============================================================================
@@ -588,6 +589,14 @@ tree_viz_config <- function(
     heatmap_view_height = NULL,
     trait_view_width = NULL,
     trait_view_height = NULL,
+    auto_fit_subviews = FALSE,
+    heatmap_tree_width = NULL,
+    heatmap_panel_width = NULL,
+    trait_tree_width = NULL,
+    tips_panel_width = NULL,
+    trait_values_width = NULL,
+    heatmap_subview_alignment = "left",
+    trait_subview_alignment = "left",
     tip_filter = NULL,
     clade = NULL,
     heatmap_columns = NULL,
@@ -619,6 +628,14 @@ tree_viz_config <- function(
     heatmap_view_height = heatmap_view_height,
     trait_view_width = trait_view_width,
     trait_view_height = trait_view_height,
+    auto_fit_subviews = auto_fit_subviews,
+    heatmap_tree_width = heatmap_tree_width,
+    heatmap_panel_width = heatmap_panel_width,
+    trait_tree_width = trait_tree_width,
+    tips_panel_width = tips_panel_width,
+    trait_values_width = trait_values_width,
+    heatmap_subview_alignment = heatmap_subview_alignment,
+    trait_subview_alignment = trait_subview_alignment,
     tip_filter = tip_filter, clade = clade,
     heatmap_columns = heatmap_columns, highlight = highlight,
     fan_angle = fan_angle, show_heatmap = show_heatmap
@@ -748,6 +765,16 @@ normalize_tree_viz_config <- function(cfg, traits, tree) {
   cfg$heatmap_view_height <- pos1(cfg$heatmap_view_height)
   cfg$trait_view_width <- pos1(cfg$trait_view_width)
   cfg$trait_view_height <- pos1(cfg$trait_view_height)
+  cfg$auto_fit_subviews <- lgl1(cfg$auto_fit_subviews, FALSE)
+  cfg$heatmap_tree_width <- pos1(cfg$heatmap_tree_width)
+  cfg$heatmap_panel_width <- pos1(cfg$heatmap_panel_width)
+  cfg$trait_tree_width <- pos1(cfg$trait_tree_width)
+  cfg$tips_panel_width <- pos1(cfg$tips_panel_width)
+  cfg$trait_values_width <- pos1(cfg$trait_values_width)
+  cfg$heatmap_subview_alignment <- match.arg(
+    chr1(cfg$heatmap_subview_alignment, "left"), c("left", "center", "right"))
+  cfg$trait_subview_alignment <- match.arg(
+    chr1(cfg$trait_subview_alignment, "left"), c("left", "center", "right"))
   if (!cfg$responsive && is.null(cfg$width) && is.null(cfg$height)) {
     cfg$width <- 1000; cfg$height <- 700
   }
@@ -1029,6 +1056,14 @@ var DEFAULT_CFG = mergeCfg({
   heatmap_view_height: null,
   trait_view_width: null,
   trait_view_height: null,
+  auto_fit_subviews: false,
+  heatmap_tree_width: null,
+  heatmap_panel_width: null,
+  trait_tree_width: null,
+  tips_panel_width: null,
+  trait_values_width: null,
+  heatmap_subview_alignment: "left",
+  trait_subview_alignment: "left",
   tip_filter: null,
   clade: null,
   heatmap_columns: null,
@@ -1353,7 +1388,9 @@ function tipMarker() {
 }
 
 function tipTraces(L) {
-  var labels = !!cfg.tip_labels;
+  // The species-name subview already labels every tip; dropping duplicate tree
+  // labels there saves width and prevents overlap in the auto-fit layout.
+  var labels = !!cfg.tip_labels && !(cfg.auto_fit_subviews && state.viewMode === "trait");
   var mk = tipMarker();
   if (cfg.layout !== "circular" && cfg.layout !== "fan") {
     var x = [], y = [], txt = [], cd = [];
@@ -1535,7 +1572,11 @@ function containerDims() {
   var w = d.width;
   var h = d.height;
   var ar = d.aspect_ratio;
-  if (w === null) w = el.clientWidth || 900;
+  if (w === null) {
+    var hostWidth = (wrap && wrap.clientWidth) || el.clientWidth || 900;
+    var minAutoWidth = (state.viewMode === "trait") ? 700 : 640;
+    w = cfg.auto_fit_subviews ? Math.max(hostWidth, minAutoWidth) : hostWidth;
+  }
   if (h === null) {
     // Ignore the CSS min-height placeholder when no real height is available.
     h = (el.clientHeight && el.clientHeight > 240) ? el.clientHeight : 600;
@@ -1548,14 +1589,110 @@ function containerDims() {
   return { width: Math.max(320, Math.round(w)), height: Math.max(240, Math.round(h)) };
 }
 
-function panelDomains() {
-  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
-  if (state.viewMode === "trait") {
-    if (radial) return { tree: [0.01, 0.35, 0.05, 0.92], names: [0.37, 0.60, 0.05, 0.92], values: [0.68, 0.97, 0.05, 0.92] };
-    return { tree: [0.01, 0.34, 0.05, 0.92], names: [0.36, 0.60, 0.05, 0.92], values: [0.68, 0.97, 0.05, 0.92] };
+var tipWidthCache = {};
+function naturalTipsPanelWidth(L) {
+  var key = tips.join("\u0001");
+  if (tipWidthCache[key] !== undefined) return tipWidthCache[key];
+  var ctx = document.createElement("canvas").getContext("2d");
+  ctx.font = "10px Times New Roman, Georgia, serif";
+  var max = 0;
+  for (var i = 0; i < L.order.length; i++) {
+    var w = ctx.measureText(tips[L.order[i] - 1]).width;
+    if (w > max) max = w;
   }
-  if (radial) return { tree: [0.01, 0.56, 0.05, 0.92], heat: [0.63, 0.92, 0.05, 0.92] };
-  return { tree: [0.01, 0.40, 0.05, 0.92], heat: [0.50, 0.90, 0.05, 0.92] };
+  // Small insets keep the label panel snug without clipping long names.
+  tipWidthCache[key] = Math.max(54, Math.min(340, Math.ceil(max + 22)));
+  return tipWidthCache[key];
+}
+
+function panelDomains(dims, L) {
+  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
+  var traitView = (state.viewMode === "trait");
+  var plotW = Math.max(1, dims.width - 50);
+  var xMin = 0.01, xMax = 0.97;
+  var available = (xMax - xMin) * plotW;
+  var widths = [], gaps = [];
+  var align = "left";
+
+  if (traitView) {
+    align = cfg.trait_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeW = Math.round(available * (radial ? 0.32 : 0.32));
+      var tipsW = naturalTipsPanelWidth(L);
+      var gap = 12;
+      var valuesW = Math.round(available * 0.40);
+      var deficit = treeW + tipsW + valuesW + 2 * gap - available;
+      if (deficit > 0) {
+        var treeShrink = Math.min(deficit, Math.max(0, treeW - 150));
+        treeW -= treeShrink;
+        deficit -= treeShrink;
+        var valuesShrink = Math.min(deficit, Math.max(0, valuesW - 150));
+        valuesW -= valuesShrink;
+        deficit -= valuesShrink;
+        tipsW -= Math.min(deficit, Math.max(0, tipsW - 54));
+      }
+      widths = [treeW, tipsW, valuesW];
+      gaps = [gap, gap];
+    } else {
+      widths = [
+        numOrNull(cfg.trait_tree_width) || Math.round(plotW * (radial ? 0.34 : 0.33)),
+        numOrNull(cfg.tips_panel_width) || Math.round(plotW * (radial ? 0.23 : 0.24)),
+        numOrNull(cfg.trait_values_width) || Math.round(plotW * 0.29)
+      ];
+      gaps = [plotW * (radial ? 0.02 : 0.02), plotW * (radial ? 0.09 : 0.08)];
+    }
+  } else {
+    align = cfg.heatmap_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeHeatW = Math.round(available * (radial ? 0.50 : 0.46));
+      var naturalHeatW = Math.max(180, Math.ceil(state.visibleCols.length * 48 + 90));
+      var heatW = Math.min(Math.round(available * 0.45), naturalHeatW);
+      var heatGap = 12;
+      var excess = treeHeatW + heatW + heatGap - available;
+      if (excess > 0) treeHeatW = Math.max(150, treeHeatW - excess);
+      widths = [treeHeatW, heatW];
+      gaps = [heatGap];
+    } else {
+      widths = [
+        numOrNull(cfg.heatmap_tree_width) || Math.round(plotW * (radial ? 0.55 : 0.39)),
+        numOrNull(cfg.heatmap_panel_width) || Math.round(plotW * (radial ? 0.29 : 0.40))
+      ];
+      gaps = [plotW * (radial ? 0.07 : 0.10)];
+    }
+  }
+
+  var used = widths.reduce(function (a, b) { return a + b; }, 0) +
+    gaps.reduce(function (a, b) { return a + b; }, 0);
+  if (used > available) {
+    var scale = Math.max(0.05, (available - gaps.reduce(function (a, b) { return a + b; }, 0)) /
+      widths.reduce(function (a, b) { return a + b; }, 0));
+    widths = widths.map(function (w) { return w * scale; });
+    used = widths.reduce(function (a, b) { return a + b; }, 0) +
+      gaps.reduce(function (a, b) { return a + b; }, 0);
+  }
+  var spare = Math.max(0, available - used);
+  var offset = align === "center" ? spare / 2 : (align === "right" ? spare : 0);
+  var cursor = xMin + offset / plotW;
+  function take(width, trailingLabelWidth) {
+    var start = cursor;
+    var domainWidth = Math.max(1, width - (trailingLabelWidth || 0));
+    cursor += width / plotW;
+    return [start, start + domainWidth / plotW, 0.05, 0.92];
+  }
+  function advanceGap(px) { cursor += px / plotW; }
+
+  var treeLabelGutter = (!traitView && cfg.auto_fit_subviews && cfg.tip_labels)
+    ? naturalTipsPanelWidth(L) : 0;
+  var tree = take(widths[0], treeLabelGutter);
+  if (traitView) {
+    advanceGap(gaps[0]);
+    var names = take(widths[1]);
+    advanceGap(gaps[1]);
+    var values = take(widths[2]);
+    return { tree: tree, names: names, values: values };
+  }
+  advanceGap(gaps[0]);
+  return { tree: tree, heat: take(widths[1]) };
 }
 
 function xdom(rect) { return [rect[0], rect[1]]; }
@@ -1580,7 +1717,7 @@ function buildLayout(L) {
   var radial = (cfg.layout === "circular" || cfg.layout === "fan");
   var m = L.m;
   var dims = containerDims();
-  var dom = panelDomains();
+  var dom = panelDomains(dims, L);
   if (radial) dom.tree = squareTreeDomain(dom.tree, dims);
   var lay = {
     title: { text: cfg.title || "", x: 0.5, xanchor: "center", font: { size: 18, color: t.font } },
@@ -1652,7 +1789,8 @@ function applyContainerSizing() {
   var arOnly = d.aspect_ratio !== null &&
     d.width === null && d.height === null;
   if (cfg.responsive && arOnly) {
-    el.style.width = "100%";
+    var hostWidth0 = wrap && wrap.clientWidth;
+    el.style.width = (hostWidth0 && dims.width > hostWidth0) ? dims.width + "px" : "100%";
     el.style.height = dims.height + "px";
     el.style.flex = "0 0 auto";
     if (wrap) wrap.style.height = "auto";
@@ -1669,8 +1807,11 @@ function applyContainerSizing() {
     var heightIsDerived = d.aspect_ratio !== null && d.width !== null;
     var fill = (standalone || parentSized) && parentH >= 240 &&
                d.height === null && !heightIsDerived;
+    var hostWidth = wrap && wrap.clientWidth;
+    var needsScroll = !!(hostWidth && dims.width > hostWidth);
     if (wrap) wrap.style.height = fill ? "100%" : "auto";
-    el.style.width = (d.width !== null) ? (dims.width + "px") : "100%";
+    if (wrap) wrap.style.overflowX = needsScroll ? "auto" : "";
+    el.style.width = (d.width !== null || needsScroll) ? (dims.width + "px") : "100%";
     if (fill) {
       el.style.height = "";
       el.style.flex = "1 1 auto";
@@ -1680,6 +1821,7 @@ function applyContainerSizing() {
     }
   } else {
     if (wrap) wrap.style.height = "auto";
+    if (wrap) wrap.style.overflowX = (wrap.clientWidth && dims.width > wrap.clientWidth) ? "auto" : "";
     el.style.width = dims.width + "px";
     el.style.height = dims.height + "px";
     el.style.flex = "0 0 auto";
@@ -1845,6 +1987,19 @@ function syncUI() {
   setVal("heatmap_view_height", cfg.heatmap_view_height);
   setVal("trait_view_width", cfg.trait_view_width);
   setVal("trait_view_height", cfg.trait_view_height);
+  setVal("auto_fit_subviews", !!cfg.auto_fit_subviews);
+  setVal("heatmap_tree_width", cfg.heatmap_tree_width);
+  setVal("heatmap_panel_width", cfg.heatmap_panel_width);
+  setVal("trait_tree_width", cfg.trait_tree_width);
+  setVal("tips_panel_width", cfg.tips_panel_width);
+  setVal("trait_values_width", cfg.trait_values_width);
+  setVal("heatmap_subview_alignment", cfg.heatmap_subview_alignment || "left");
+  setVal("trait_subview_alignment", cfg.trait_subview_alignment || "left");
+  ["heatmap_tree_width", "heatmap_panel_width", "trait_tree_width",
+    "tips_panel_width", "trait_values_width"].forEach(function (role) {
+      var input = q(role);
+      if (input) input.disabled = !!cfg.auto_fit_subviews;
+    });
 
   var auto = !(cfg.heatmap_range && cfg.heatmap_range.length === 2);
   setVal("heatmap_auto", auto);
@@ -2181,6 +2336,17 @@ function bindEvents() {
   on("heatmap_view_height", "change", function () { cfg.heatmap_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("trait_view_width", "change", function () { cfg.trait_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("trait_view_height", "change", function () { cfg.trait_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("auto_fit_subviews", "change", function () {
+    cfg.auto_fit_subviews = this.checked;
+    markModified(); syncUI(); redraw();
+  });
+  on("heatmap_tree_width", "change", function () { cfg.heatmap_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_panel_width", "change", function () { cfg.heatmap_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_tree_width", "change", function () { cfg.trait_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("tips_panel_width", "change", function () { cfg.tips_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_values_width", "change", function () { cfg.trait_values_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_subview_alignment", "change", function () { cfg.heatmap_subview_alignment = this.value; markModified(); redraw(); });
+  on("trait_subview_alignment", "change", function () { cfg.trait_subview_alignment = this.value; markModified(); redraw(); });
   on("heatmap_auto", "change", function () {
     if (this.checked) cfg.heatmap_range = null;
     else {
@@ -2270,7 +2436,7 @@ initStateFromConfig();
 
 var styleEl = document.createElement("style");
 styleEl.textContent = [
-  ".itv-wrap{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;box-sizing:border-box;}",
+  ".itv-wrap{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;box-sizing:border-box;overflow-x:auto;}",
   ".itv-ui{--itv-bg:#f7f7f7;--itv-fg:#222;--itv-border:#ddd;--itv-input:#fff;--itv-accent:#1f77b4;--itv-muted:#666;",
   "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:var(--itv-fg);",
   "background:var(--itv-bg);border:1px solid var(--itv-border);border-radius:6px;padding:6px 8px;margin:0 0 6px 0;box-sizing:border-box;flex:0 0 auto;}",
@@ -2316,7 +2482,7 @@ h.push('<details><summary>Appearance &amp; titles</summary><div class="itv-grid"
 h.push('<label>Title<input type="text" data-role="title"></label>');
 h.push('<label>Subtitle<input type="text" data-role="subtitle"></label>');
 h.push('<label>Layout<select data-role="layout"><option value="rectangular">Rectangular</option><option value="slanted">Slanted</option><option value="circular">Circular</option><option value="fan">Fan</option></select></label>');
-h.push('<label>Tip labels<input type="checkbox" data-role="tip_labels"></label>');
+h.push('<label>Tree tip labels<input type="checkbox" data-role="tip_labels"></label>');
 h.push('<label>Tip label size<input type="number" min="1" step="0.5" data-role="tip_label_size"></label>');
 h.push('<label>Show internal nodes<input type="checkbox" data-role="show_internal_nodes"></label>');
 h.push('<label>Internal node size<input type="number" min="1" step="0.5" data-role="internal_node_size"></label>');
@@ -2339,6 +2505,8 @@ h.push('<label>Species panel title<input type="text" data-role="species_panel_ti
 h.push('<label>Trait panel title<input type="text" data-role="trait_panel_title" placeholder="auto: trait name + value"></label>');
 h.push('<label>Fan angle (deg)<input type="number" min="10" max="360" step="1" data-role="fan_angle"></label>');
 h.push('<label>Show heatmap<input type="checkbox" data-role="show_heatmap"></label>');
+h.push('</div></details>');
+h.push('<details><summary>View sizing &amp; subviews</summary><div class="itv-grid">');
 h.push('<div class="itv-wide itv-subhead">View sizing (blank = default)</div>');
 h.push('<label>Heatmap view width (px)<input type="number" min="320" step="10" data-role="heatmap_view_width"></label>');
 h.push('<label>Heatmap view height (px)<input type="number" min="240" step="10" data-role="heatmap_view_height"></label>');
@@ -2348,6 +2516,16 @@ h.push('<label>Default width (px)<input type="number" min="320" step="10" data-r
 h.push('<label>Default height (px)<input type="number" min="240" step="10" data-role="height"></label>');
 h.push('<label>Aspect ratio (w/h)<input type="number" min="0.1" step="0.01" data-role="aspect_ratio"></label>');
 h.push('<label>Responsive fill<input type="checkbox" data-role="responsive"></label>');
+h.push('<div class="itv-wide itv-subhead">Subviews</div>');
+h.push('<label>Auto-fit subview widths<input type="checkbox" data-role="auto_fit_subviews"></label>');
+h.push('<label>Heatmap panel group alignment<select data-role="heatmap_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Tree panel width (px)<input type="number" min="100" step="10" data-role="heatmap_tree_width"></label>');
+h.push('<label>Heatmap panel width (px)<input type="number" min="100" step="10" data-role="heatmap_panel_width"></label>');
+h.push('<label>Species + trait panel group alignment<select data-role="trait_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Species + trait tree width (px)<input type="number" min="100" step="10" data-role="trait_tree_width"></label>');
+h.push('<label>Tips panel width (px)<input type="number" min="60" step="10" data-role="tips_panel_width"></label>');
+h.push('<label>Trait values panel width (px)<input type="number" min="100" step="10" data-role="trait_values_width"></label>');
+h.push('<div class="itv-wide itv-hint">Auto-fit measures the species labels, reserves room for tree labels, and fits the main chart panel. The Species + trait view uses its dedicated tips panel instead of duplicate tree labels. Panel heights follow the view height to keep tip rows aligned.</div>');
 h.push('</div></details>');
 
 h.push('<details><summary>Filtering &amp; highlighting</summary><div class="itv-grid">');
@@ -2567,6 +2745,9 @@ viz_cfg <- tree_viz_config(
   responsive         = TRUE,
   height             = 720,
   trait_view_height  = 620,
+  auto_fit_subviews  = TRUE,
+  heatmap_subview_alignment = "center",
+  trait_subview_alignment = "center",
   highlight          = list(
     trait = trait1,
     max   = stats::median(traits[, trait1], na.rm = TRUE),

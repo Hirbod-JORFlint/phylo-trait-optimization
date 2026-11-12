@@ -49,7 +49,9 @@ function tipMarker() {
 }
 
 function tipTraces(L) {
-  var labels = !!cfg.tip_labels;
+  // The species-name subview already labels every tip; dropping duplicate tree
+  // labels there saves width and prevents overlap in the auto-fit layout.
+  var labels = !!cfg.tip_labels && !(cfg.auto_fit_subviews && state.viewMode === "trait");
   var mk = tipMarker();
   if (cfg.layout !== "circular" && cfg.layout !== "fan") {
     var x = [], y = [], txt = [], cd = [];
@@ -231,7 +233,11 @@ function containerDims() {
   var w = d.width;
   var h = d.height;
   var ar = d.aspect_ratio;
-  if (w === null) w = el.clientWidth || 900;
+  if (w === null) {
+    var hostWidth = (wrap && wrap.clientWidth) || el.clientWidth || 900;
+    var minAutoWidth = (state.viewMode === "trait") ? 700 : 640;
+    w = cfg.auto_fit_subviews ? Math.max(hostWidth, minAutoWidth) : hostWidth;
+  }
   if (h === null) {
     // Ignore the CSS min-height placeholder when no real height is available.
     h = (el.clientHeight && el.clientHeight > 240) ? el.clientHeight : 600;
@@ -244,14 +250,110 @@ function containerDims() {
   return { width: Math.max(320, Math.round(w)), height: Math.max(240, Math.round(h)) };
 }
 
-function panelDomains() {
-  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
-  if (state.viewMode === "trait") {
-    if (radial) return { tree: [0.01, 0.35, 0.05, 0.92], names: [0.37, 0.60, 0.05, 0.92], values: [0.68, 0.97, 0.05, 0.92] };
-    return { tree: [0.01, 0.34, 0.05, 0.92], names: [0.36, 0.60, 0.05, 0.92], values: [0.68, 0.97, 0.05, 0.92] };
+var tipWidthCache = {};
+function naturalTipsPanelWidth(L) {
+  var key = tips.join("\u0001");
+  if (tipWidthCache[key] !== undefined) return tipWidthCache[key];
+  var ctx = document.createElement("canvas").getContext("2d");
+  ctx.font = "10px Times New Roman, Georgia, serif";
+  var max = 0;
+  for (var i = 0; i < L.order.length; i++) {
+    var w = ctx.measureText(tips[L.order[i] - 1]).width;
+    if (w > max) max = w;
   }
-  if (radial) return { tree: [0.01, 0.56, 0.05, 0.92], heat: [0.63, 0.92, 0.05, 0.92] };
-  return { tree: [0.01, 0.40, 0.05, 0.92], heat: [0.50, 0.90, 0.05, 0.92] };
+  // Small insets keep the label panel snug without clipping long names.
+  tipWidthCache[key] = Math.max(54, Math.min(340, Math.ceil(max + 22)));
+  return tipWidthCache[key];
+}
+
+function panelDomains(dims, L) {
+  var radial = (cfg.layout === "circular" || cfg.layout === "fan");
+  var traitView = (state.viewMode === "trait");
+  var plotW = Math.max(1, dims.width - 50);
+  var xMin = 0.01, xMax = 0.97;
+  var available = (xMax - xMin) * plotW;
+  var widths = [], gaps = [];
+  var align = "left";
+
+  if (traitView) {
+    align = cfg.trait_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeW = Math.round(available * (radial ? 0.32 : 0.32));
+      var tipsW = naturalTipsPanelWidth(L);
+      var gap = 12;
+      var valuesW = Math.round(available * 0.40);
+      var deficit = treeW + tipsW + valuesW + 2 * gap - available;
+      if (deficit > 0) {
+        var treeShrink = Math.min(deficit, Math.max(0, treeW - 150));
+        treeW -= treeShrink;
+        deficit -= treeShrink;
+        var valuesShrink = Math.min(deficit, Math.max(0, valuesW - 150));
+        valuesW -= valuesShrink;
+        deficit -= valuesShrink;
+        tipsW -= Math.min(deficit, Math.max(0, tipsW - 54));
+      }
+      widths = [treeW, tipsW, valuesW];
+      gaps = [gap, gap];
+    } else {
+      widths = [
+        numOrNull(cfg.trait_tree_width) || Math.round(plotW * (radial ? 0.34 : 0.33)),
+        numOrNull(cfg.tips_panel_width) || Math.round(plotW * (radial ? 0.23 : 0.24)),
+        numOrNull(cfg.trait_values_width) || Math.round(plotW * 0.29)
+      ];
+      gaps = [plotW * (radial ? 0.02 : 0.02), plotW * (radial ? 0.09 : 0.08)];
+    }
+  } else {
+    align = cfg.heatmap_subview_alignment || "left";
+    if (cfg.auto_fit_subviews) {
+      var treeHeatW = Math.round(available * (radial ? 0.50 : 0.46));
+      var naturalHeatW = Math.max(180, Math.ceil(state.visibleCols.length * 48 + 90));
+      var heatW = Math.min(Math.round(available * 0.45), naturalHeatW);
+      var heatGap = 12;
+      var excess = treeHeatW + heatW + heatGap - available;
+      if (excess > 0) treeHeatW = Math.max(150, treeHeatW - excess);
+      widths = [treeHeatW, heatW];
+      gaps = [heatGap];
+    } else {
+      widths = [
+        numOrNull(cfg.heatmap_tree_width) || Math.round(plotW * (radial ? 0.55 : 0.39)),
+        numOrNull(cfg.heatmap_panel_width) || Math.round(plotW * (radial ? 0.29 : 0.40))
+      ];
+      gaps = [plotW * (radial ? 0.07 : 0.10)];
+    }
+  }
+
+  var used = widths.reduce(function (a, b) { return a + b; }, 0) +
+    gaps.reduce(function (a, b) { return a + b; }, 0);
+  if (used > available) {
+    var scale = Math.max(0.05, (available - gaps.reduce(function (a, b) { return a + b; }, 0)) /
+      widths.reduce(function (a, b) { return a + b; }, 0));
+    widths = widths.map(function (w) { return w * scale; });
+    used = widths.reduce(function (a, b) { return a + b; }, 0) +
+      gaps.reduce(function (a, b) { return a + b; }, 0);
+  }
+  var spare = Math.max(0, available - used);
+  var offset = align === "center" ? spare / 2 : (align === "right" ? spare : 0);
+  var cursor = xMin + offset / plotW;
+  function take(width, trailingLabelWidth) {
+    var start = cursor;
+    var domainWidth = Math.max(1, width - (trailingLabelWidth || 0));
+    cursor += width / plotW;
+    return [start, start + domainWidth / plotW, 0.05, 0.92];
+  }
+  function advanceGap(px) { cursor += px / plotW; }
+
+  var treeLabelGutter = (!traitView && cfg.auto_fit_subviews && cfg.tip_labels)
+    ? naturalTipsPanelWidth(L) : 0;
+  var tree = take(widths[0], treeLabelGutter);
+  if (traitView) {
+    advanceGap(gaps[0]);
+    var names = take(widths[1]);
+    advanceGap(gaps[1]);
+    var values = take(widths[2]);
+    return { tree: tree, names: names, values: values };
+  }
+  advanceGap(gaps[0]);
+  return { tree: tree, heat: take(widths[1]) };
 }
 
 function xdom(rect) { return [rect[0], rect[1]]; }
@@ -276,7 +378,7 @@ function buildLayout(L) {
   var radial = (cfg.layout === "circular" || cfg.layout === "fan");
   var m = L.m;
   var dims = containerDims();
-  var dom = panelDomains();
+  var dom = panelDomains(dims, L);
   if (radial) dom.tree = squareTreeDomain(dom.tree, dims);
   var lay = {
     title: { text: cfg.title || "", x: 0.5, xanchor: "center", font: { size: 18, color: t.font } },
@@ -348,7 +450,8 @@ function applyContainerSizing() {
   var arOnly = d.aspect_ratio !== null &&
     d.width === null && d.height === null;
   if (cfg.responsive && arOnly) {
-    el.style.width = "100%";
+    var hostWidth0 = wrap && wrap.clientWidth;
+    el.style.width = (hostWidth0 && dims.width > hostWidth0) ? dims.width + "px" : "100%";
     el.style.height = dims.height + "px";
     el.style.flex = "0 0 auto";
     if (wrap) wrap.style.height = "auto";
@@ -365,8 +468,11 @@ function applyContainerSizing() {
     var heightIsDerived = d.aspect_ratio !== null && d.width !== null;
     var fill = (standalone || parentSized) && parentH >= 240 &&
                d.height === null && !heightIsDerived;
+    var hostWidth = wrap && wrap.clientWidth;
+    var needsScroll = !!(hostWidth && dims.width > hostWidth);
     if (wrap) wrap.style.height = fill ? "100%" : "auto";
-    el.style.width = (d.width !== null) ? (dims.width + "px") : "100%";
+    if (wrap) wrap.style.overflowX = needsScroll ? "auto" : "";
+    el.style.width = (d.width !== null || needsScroll) ? (dims.width + "px") : "100%";
     if (fill) {
       el.style.height = "";
       el.style.flex = "1 1 auto";
@@ -376,6 +482,7 @@ function applyContainerSizing() {
     }
   } else {
     if (wrap) wrap.style.height = "auto";
+    if (wrap) wrap.style.overflowX = (wrap.clientWidth && dims.width > wrap.clientWidth) ? "auto" : "";
     el.style.width = dims.width + "px";
     el.style.height = dims.height + "px";
     el.style.flex = "0 0 auto";

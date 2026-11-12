@@ -125,6 +125,19 @@ function syncUI() {
   setVal("heatmap_view_height", cfg.heatmap_view_height);
   setVal("trait_view_width", cfg.trait_view_width);
   setVal("trait_view_height", cfg.trait_view_height);
+  setVal("auto_fit_subviews", !!cfg.auto_fit_subviews);
+  setVal("heatmap_tree_width", cfg.heatmap_tree_width);
+  setVal("heatmap_panel_width", cfg.heatmap_panel_width);
+  setVal("trait_tree_width", cfg.trait_tree_width);
+  setVal("tips_panel_width", cfg.tips_panel_width);
+  setVal("trait_values_width", cfg.trait_values_width);
+  setVal("heatmap_subview_alignment", cfg.heatmap_subview_alignment || "left");
+  setVal("trait_subview_alignment", cfg.trait_subview_alignment || "left");
+  ["heatmap_tree_width", "heatmap_panel_width", "trait_tree_width",
+    "tips_panel_width", "trait_values_width"].forEach(function (role) {
+      var input = q(role);
+      if (input) input.disabled = !!cfg.auto_fit_subviews;
+    });
 
   var auto = !(cfg.heatmap_range && cfg.heatmap_range.length === 2);
   setVal("heatmap_auto", auto);
@@ -461,6 +474,17 @@ function bindEvents() {
   on("heatmap_view_height", "change", function () { cfg.heatmap_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("trait_view_width", "change", function () { cfg.trait_view_width = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
   on("trait_view_height", "change", function () { cfg.trait_view_height = numOrNull(this.value); markModified(); applyContainerSizing(); redraw(); });
+  on("auto_fit_subviews", "change", function () {
+    cfg.auto_fit_subviews = this.checked;
+    markModified(); syncUI(); redraw();
+  });
+  on("heatmap_tree_width", "change", function () { cfg.heatmap_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_panel_width", "change", function () { cfg.heatmap_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_tree_width", "change", function () { cfg.trait_tree_width = numOrNull(this.value); markModified(); redraw(); });
+  on("tips_panel_width", "change", function () { cfg.tips_panel_width = numOrNull(this.value); markModified(); redraw(); });
+  on("trait_values_width", "change", function () { cfg.trait_values_width = numOrNull(this.value); markModified(); redraw(); });
+  on("heatmap_subview_alignment", "change", function () { cfg.heatmap_subview_alignment = this.value; markModified(); redraw(); });
+  on("trait_subview_alignment", "change", function () { cfg.trait_subview_alignment = this.value; markModified(); redraw(); });
   on("heatmap_auto", "change", function () {
     if (this.checked) cfg.heatmap_range = null;
     else {
@@ -550,7 +574,7 @@ initStateFromConfig();
 
 var styleEl = document.createElement("style");
 styleEl.textContent = [
-  ".itv-wrap{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;box-sizing:border-box;}",
+  ".itv-wrap{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;box-sizing:border-box;overflow-x:auto;}",
   ".itv-ui{--itv-bg:#f7f7f7;--itv-fg:#222;--itv-border:#ddd;--itv-input:#fff;--itv-accent:#1f77b4;--itv-muted:#666;",
   "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:var(--itv-fg);",
   "background:var(--itv-bg);border:1px solid var(--itv-border);border-radius:6px;padding:6px 8px;margin:0 0 6px 0;box-sizing:border-box;flex:0 0 auto;}",
@@ -596,7 +620,7 @@ h.push('<details><summary>Appearance &amp; titles</summary><div class="itv-grid"
 h.push('<label>Title<input type="text" data-role="title"></label>');
 h.push('<label>Subtitle<input type="text" data-role="subtitle"></label>');
 h.push('<label>Layout<select data-role="layout"><option value="rectangular">Rectangular</option><option value="slanted">Slanted</option><option value="circular">Circular</option><option value="fan">Fan</option></select></label>');
-h.push('<label>Tip labels<input type="checkbox" data-role="tip_labels"></label>');
+h.push('<label>Tree tip labels<input type="checkbox" data-role="tip_labels"></label>');
 h.push('<label>Tip label size<input type="number" min="1" step="0.5" data-role="tip_label_size"></label>');
 h.push('<label>Show internal nodes<input type="checkbox" data-role="show_internal_nodes"></label>');
 h.push('<label>Internal node size<input type="number" min="1" step="0.5" data-role="internal_node_size"></label>');
@@ -619,6 +643,8 @@ h.push('<label>Species panel title<input type="text" data-role="species_panel_ti
 h.push('<label>Trait panel title<input type="text" data-role="trait_panel_title" placeholder="auto: trait name + value"></label>');
 h.push('<label>Fan angle (deg)<input type="number" min="10" max="360" step="1" data-role="fan_angle"></label>');
 h.push('<label>Show heatmap<input type="checkbox" data-role="show_heatmap"></label>');
+h.push('</div></details>');
+h.push('<details><summary>View sizing &amp; subviews</summary><div class="itv-grid">');
 h.push('<div class="itv-wide itv-subhead">View sizing (blank = default)</div>');
 h.push('<label>Heatmap view width (px)<input type="number" min="320" step="10" data-role="heatmap_view_width"></label>');
 h.push('<label>Heatmap view height (px)<input type="number" min="240" step="10" data-role="heatmap_view_height"></label>');
@@ -628,6 +654,16 @@ h.push('<label>Default width (px)<input type="number" min="320" step="10" data-r
 h.push('<label>Default height (px)<input type="number" min="240" step="10" data-role="height"></label>');
 h.push('<label>Aspect ratio (w/h)<input type="number" min="0.1" step="0.01" data-role="aspect_ratio"></label>');
 h.push('<label>Responsive fill<input type="checkbox" data-role="responsive"></label>');
+h.push('<div class="itv-wide itv-subhead">Subviews</div>');
+h.push('<label>Auto-fit subview widths<input type="checkbox" data-role="auto_fit_subviews"></label>');
+h.push('<label>Heatmap panel group alignment<select data-role="heatmap_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Tree panel width (px)<input type="number" min="100" step="10" data-role="heatmap_tree_width"></label>');
+h.push('<label>Heatmap panel width (px)<input type="number" min="100" step="10" data-role="heatmap_panel_width"></label>');
+h.push('<label>Species + trait panel group alignment<select data-role="trait_subview_alignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>');
+h.push('<label>Species + trait tree width (px)<input type="number" min="100" step="10" data-role="trait_tree_width"></label>');
+h.push('<label>Tips panel width (px)<input type="number" min="60" step="10" data-role="tips_panel_width"></label>');
+h.push('<label>Trait values panel width (px)<input type="number" min="100" step="10" data-role="trait_values_width"></label>');
+h.push('<div class="itv-wide itv-hint">Auto-fit measures the species labels, reserves room for tree labels, and fits the main chart panel. The Species + trait view uses its dedicated tips panel instead of duplicate tree labels. Panel heights follow the view height to keep tip rows aligned.</div>');
 h.push('</div></details>');
 
 h.push('<details><summary>Filtering &amp; highlighting</summary><div class="itv-grid">');

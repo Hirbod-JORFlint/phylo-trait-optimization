@@ -44,9 +44,34 @@ tree_viz_config(
 )
 ```
 
+Panel controls can be set independently too:
+
+```r
+tree_viz_config(
+  auto_fit_subviews = FALSE,
+  heatmap_subview_alignment = "center",
+  trait_subview_alignment = "right",
+  heatmap_tree_width = 380,
+  heatmap_panel_width = 460,
+  trait_tree_width = 320,
+  tips_panel_width = 140,
+  trait_values_width = 360
+)
+```
+
 The heatmap view is the initial view; `trait_view_*` controls the
 Species + trait panel. Blank per-view values inherit the general `width` and
 `height` settings, then the widget's responsive sizing behavior.
+
+Subview controls are available through `auto_fit_subviews`, the view alignment
+fields (`heatmap_subview_alignment`, `trait_subview_alignment`) and panel width
+fields (`heatmap_tree_width`, `heatmap_panel_width`, `trait_tree_width`,
+`tips_panel_width`, `trait_values_width`). The alignment fields position the
+panel group within each view. Auto-fit measures the tips panel, reserves space
+for tree-tip labels in heatmap view, and removes duplicate tree labels in the
+Species + trait view. With auto-fit off, the panel width fields are editable.
+Panel heights stay linked within a view so tip rows remain aligned; set the
+containing view's height with `heatmap_view_height` or `trait_view_height`.
 
 ## Run the tests
 

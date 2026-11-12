@@ -1,5 +1,13 @@
 (function () {
-  var out = { steps: [] };
+  var out = { steps: [], errors: [] };
+  var react = Plotly.react;
+  Plotly.react = function () {
+    var result = react.apply(this, arguments);
+    if (result && typeof result.catch === "function") {
+      result.catch(function (e) { out.errors.push(String(e && e.stack || e)); });
+    }
+    return result;
+  };
   function q(role) { return document.querySelector('[data-role="' + role + '"]'); }
   function setVal(role, val) {
     var e = q(role);
@@ -56,20 +64,30 @@
     setVal("highlight_max", "1");
     out.steps.push({ name: "highlight", status: status(), metas: metas() });
   });
-  step("traitView", function () {
+  step("traitView", function (done) {
     q("view").click();
-    var p = plotEl();
-    out.steps.push({ name: "traitView", metas: metas(),
-      width: p.style.width, height: p.style.height,
-      x3: full().xaxis3 && full().xaxis3.domain,
-      y2: full().yaxis2 && full().yaxis2.domain,
-      y2range: full().yaxis2 && full().yaxis2.range });
+    setTimeout(function () {
+      var p = plotEl();
+      out.steps.push({ name: "traitView", metas: metas(),
+        width: p.style.width, height: p.style.height,
+        button: q("view").textContent,
+        autoFit: q("auto_fit_subviews").checked,
+        widthsDisabled: q("heatmap_tree_width").disabled && q("tips_panel_width").disabled,
+        namesDomain: full().xaxis2 && full().xaxis2.domain,
+        valuesDomain: full().xaxis3 && full().xaxis3.domain,
+        y2: full().yaxis2 && full().yaxis2.domain,
+        y2range: full().yaxis2 && full().yaxis2.range });
+      done();
+    }, 700);
   });
-  step("heatView", function () {
+  step("heatView", function (done) {
     q("view").click();
-    var p = plotEl();
-    out.steps.push({ name: "heatView", metas: metas(),
-      width: p.style.width, height: p.style.height });
+    setTimeout(function () {
+      var p = plotEl();
+      out.steps.push({ name: "heatView", metas: metas(),
+        width: p.style.width, height: p.style.height });
+      done();
+    }, 700);
   });
   step("presetDark", function () {
     setVal("preset_select", "builtin:dark");
@@ -124,8 +142,13 @@
       return;
     }
     var s = steps[i++];
-    try { s.fn(); } catch (e) { out.steps.push({ name: s.name, error: String(e) }); }
-    setTimeout(run, 350);
+    try {
+      if (s.fn.length) s.fn(function () { setTimeout(run, 350); });
+      else { s.fn(); setTimeout(run, 350); }
+    } catch (e) {
+      out.steps.push({ name: s.name, error: String(e) });
+      setTimeout(run, 350);
+    }
   }
   setTimeout(run, 2000);
 })();

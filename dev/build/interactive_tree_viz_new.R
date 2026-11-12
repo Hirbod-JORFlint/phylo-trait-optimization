@@ -7,7 +7,7 @@
 #   - Click an internal-node diamond to flip its child clades (topology safe)
 #   - Optional OLO (Bar-Joseph et al. 2001) optimal leaf ordering
 #   - Second view: tree + species names + values of a selected trait
-#   - Appearance, titles, per-view sizing, filtering, highlighting, dark/light mode
+#   - Appearance, titles, per-view/subview sizing and alignment, filtering, highlighting, dark/light mode
 #   - Export PNG / SVG / PDF (print), Newick, heatmap CSV and config JSON
 #   - Built-in and user-saved configuration presets
 # =============================================================================
@@ -169,6 +169,14 @@ tree_viz_config <- function(
     heatmap_view_height = NULL,
     trait_view_width = NULL,
     trait_view_height = NULL,
+    auto_fit_subviews = FALSE,
+    heatmap_tree_width = NULL,
+    heatmap_panel_width = NULL,
+    trait_tree_width = NULL,
+    tips_panel_width = NULL,
+    trait_values_width = NULL,
+    heatmap_subview_alignment = "left",
+    trait_subview_alignment = "left",
     tip_filter = NULL,
     clade = NULL,
     heatmap_columns = NULL,
@@ -200,6 +208,14 @@ tree_viz_config <- function(
     heatmap_view_height = heatmap_view_height,
     trait_view_width = trait_view_width,
     trait_view_height = trait_view_height,
+    auto_fit_subviews = auto_fit_subviews,
+    heatmap_tree_width = heatmap_tree_width,
+    heatmap_panel_width = heatmap_panel_width,
+    trait_tree_width = trait_tree_width,
+    tips_panel_width = tips_panel_width,
+    trait_values_width = trait_values_width,
+    heatmap_subview_alignment = heatmap_subview_alignment,
+    trait_subview_alignment = trait_subview_alignment,
     tip_filter = tip_filter, clade = clade,
     heatmap_columns = heatmap_columns, highlight = highlight,
     fan_angle = fan_angle, show_heatmap = show_heatmap
@@ -329,6 +345,16 @@ normalize_tree_viz_config <- function(cfg, traits, tree) {
   cfg$heatmap_view_height <- pos1(cfg$heatmap_view_height)
   cfg$trait_view_width <- pos1(cfg$trait_view_width)
   cfg$trait_view_height <- pos1(cfg$trait_view_height)
+  cfg$auto_fit_subviews <- lgl1(cfg$auto_fit_subviews, FALSE)
+  cfg$heatmap_tree_width <- pos1(cfg$heatmap_tree_width)
+  cfg$heatmap_panel_width <- pos1(cfg$heatmap_panel_width)
+  cfg$trait_tree_width <- pos1(cfg$trait_tree_width)
+  cfg$tips_panel_width <- pos1(cfg$tips_panel_width)
+  cfg$trait_values_width <- pos1(cfg$trait_values_width)
+  cfg$heatmap_subview_alignment <- match.arg(
+    chr1(cfg$heatmap_subview_alignment, "left"), c("left", "center", "right"))
+  cfg$trait_subview_alignment <- match.arg(
+    chr1(cfg$trait_subview_alignment, "left"), c("left", "center", "right"))
   if (!cfg$responsive && is.null(cfg$width) && is.null(cfg$height)) {
     cfg$width <- 1000; cfg$height <- 700
   }
